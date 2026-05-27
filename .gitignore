@@ -1,0 +1,38 @@
+# 1. 忽略编译生成输出
+build/
+bin/
+obj/
+out/
+Objects/
+Listings/
+DebugConfig/
+MDK-ARM/build/
+MDK-ARM/DebugConfig/
+
+# 2. 忽略庞大的官方底层库和中间件 (它们可由CubeMX复原)
+Drivers/
+Middlewares/
+
+# 3. 忽略 IDE 本地用户配置与隐藏缓存
+.vscode/launch.json
+.settings/
+.eide/log/
+.eide.usr.ctx.json
+.mxproject
+*.uvguix.*
+# 你的本地调试视图记录
+*.uvoptx   
+
+# 忽略 MDK-ARM 下特殊的 IDE 和底层辅助隐藏文件夹
+MDK-ARM/.cmsis/
+MDK-ARM/.eide/
+MDK-ARM/.vscode/
+
+# 4. 忽略 Python 的虚拟环境缓存 (Vision里)
+Vision/venv/
+__pycache__/
+*.pyc
+
+# 5. Eide 模板
+*.ept
+*.eide-template

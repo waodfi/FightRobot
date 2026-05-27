@@ -1,0 +1,11 @@
+{
+    "folders": [
+        {
+            "path": "."
+        }
+    ],
+    "settings": {
+        "EIDE.ARM.ARMCC6.InstallDirectory": "C:\\Keil_v5\\ARM\\ARMCLANG"
+    },
+    "extensions": {}
+}
