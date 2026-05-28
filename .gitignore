@@ -9,6 +9,20 @@ DebugConfig/
 MDK-ARM/build/
 MDK-ARM/DebugConfig/
 
+MDK-ARM/FightRobot/
+*.o
+*.d
+*.crf
+*.axf
+*.htm
+*.lnp
+*.sct
+*.map
+*.hex
+*.lst
+*.dep
+*.Bak
+
 # 2. 忽略庞大的官方底层库和中间件 (它们可由CubeMX复原)
 Drivers/
 Middlewares/
@@ -27,6 +41,11 @@ Middlewares/
 MDK-ARM/.cmsis/
 MDK-ARM/.eide/
 MDK-ARM/.vscode/
+
+MDK-ARM/.pack/
+MDK-ARM/RTE/
+*.dbgconf
+RTE_Components.h
 
 # 4. 忽略 Python 的虚拟环境缓存 (Vision里)
 Vision/venv/

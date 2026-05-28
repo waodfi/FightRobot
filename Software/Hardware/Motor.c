@@ -89,14 +89,21 @@ void Motor_SetSpeed(uint8_t num, int8_t Speed)
         GPIO_PinState revState = (cfg->FwdState == GPIO_PIN_SET) ? GPIO_PIN_RESET : GPIO_PIN_SET;
         HAL_GPIO_WritePin(cfg->GPIOx, cfg->GPIO_Pin, revState);
     }
-    else /* Speed == 0 时的原始逻辑：TogglePin */
-    {
-        Motor_Dirs[num - 1] = 1;
-        HAL_GPIO_TogglePin(cfg->GPIOx, cfg->GPIO_Pin);
-    }
+        /* 删除原有的 else 处理逻辑，当 Speed == 0 时：
+       不改变硬件方向引脚的状态，且保留上一次保存的 Motor_Dirs 方向，
+       让车轮配合刹车悬空实现自然平滑滑行，防止 PID 错乱！ */
 
-    /* 5. 输出PWM占空比 (使用绝对值) */
-    __HAL_TIM_SetCompare(&htim8, cfg->TIM_Channel, abs(Speed));
+        /* 5. 输出PWM占空比 (使用绝对值) */
+    // 假设你的新电机是 3 号
+    if (num == 3) 
+    {
+        // 定时器 ARR=99，所以输入 100 就是纯高电平
+        __HAL_TIM_SetCompare(&htim8, cfg->TIM_Channel, 100 - abs(Speed));
+    }
+    else
+    {
+        __HAL_TIM_SetCompare(&htim8, cfg->TIM_Channel, abs(Speed));
+    }
 }
 
 /**
