@@ -65,6 +65,8 @@ static void Control_ParseData(const char *buf) {
     }
 }
 
+extern void Trigger_Debug_Launch(void);
+
 /**
  * @brief 供主外设中断或 HAL_UARTEx_RxEventCallback 调用的串口接收业务函数
  */
@@ -73,8 +75,13 @@ void Control_UART_RxCallback(UART_HandleTypeDef *huart, uint16_t Size) {
         // 添加字符串结束符保证 strchr 不越界
         rx_buffer[Size < RX_BUF_SIZE ? Size : (RX_BUF_SIZE - 1)] = '\0';
         
-        // 解析数据
-        Control_ParseData((const char*)rx_buffer);
+        // 优先检查串口助手是否发送了 "Y"、"y" 字符，用于一键触发登台调试
+        if (strstr((const char*)rx_buffer, "Y") != NULL || strstr((const char*)rx_buffer, "y") != NULL) {
+            Trigger_Debug_Launch();
+        } else {
+            // 解析数据
+            Control_ParseData((const char*)rx_buffer);
+        }
         
         // 重新开启 DMA 接收
         HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_buffer, RX_BUF_SIZE);
