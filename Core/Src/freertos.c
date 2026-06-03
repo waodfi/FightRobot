@@ -123,7 +123,9 @@ typedef enum {
     ROBOT_SQUARING          = 6,   /* 物理顶墙：向前以 SQUARING_SPEED 顶墙，并重置IMU Yaw轴 */
     ROBOT_CLIMBING_OFFSTAGE = 7,   /* 闭环冲台：向后倒车 + PD纠偏直走登台 */
     ROBOT_FINISHED          = 8,   /* 登台/测试完成：保持绝对静止 */
-    ROBOT_RUNNING           = 9    /* 运行状态：常规模式 */
+    ROBOT_RUNNING           = 9,   /* 运行状态：常规模式 */
+    ROBOT_TEST_ROTATE_90    = 10,  /* 测试状态：输入Y后，小车逆时针连续转动90° */
+    ROBOT_TEST_ROTATE_PREPARE = 11  /* 准备状态：输入Y后，在任务中安全重置偏航角并等待 */
 } RobotState_e;
 
 volatile RobotState_e robot_state = ROBOT_WAITING;  /* 状态机当前状态 */
@@ -625,6 +627,8 @@ void StartMotion_Task(void *argument)
   
   uint16_t last_servo_angle = 90;  /* 记录上一个有效的舵机角度 */
   const uint16_t servo_step = 2;    /* 固定步进角度：每个周期移动2度 */
+  static uint8_t init_rotate_pd = 0; /* 用于连续转90°测试的 PD 控制器初始化标志 */
+  static float last_yaw_err = 0.0f;   /* 上一次的偏航角误差，用于微分项计算 */
 
   /* 自适应软启动基准校准（防上电时手拿开的误差） */
   /* 给 Sensor_Task 充裕的通电稳定与采样等待时间，防止开机读取 0 盲值 */
@@ -968,6 +972,98 @@ void StartMotion_Task(void *argument)
           Motor_Control(0, 0);
           break;
         }
+
+        case ROBOT_TEST_ROTATE_PREPARE:
+        {
+          /* 1. 停止小车电机，准备校准 */
+          Motor_Control(0, 0);
+          
+          /* 2. 发送指令重置 Z 轴角度（偏航角） */
+          IMU_ZeroZAxis();
+          
+          /* 3. 在任务上下文中安全地等待最多 500ms 直到读取到真实的零偏数据 */
+          uint32_t wait_start = HAL_GetTick();
+          while (HAL_GetTick() - wait_start < 500)
+          {
+            osDelay(20);
+            if (fabs(IMU_Data.Yaw) < 1.0f)
+            {
+              break;
+            }
+          }
+          
+          /* 4. 初始化转向参数并跳转到 90° 旋转测试状态（本车逆时针/左转会导致偏航角 Yaw 增加） */
+          target_angle_lock = 90.0f;
+          init_rotate_pd = 0; /* 标志位重置 */
+          robot_state = ROBOT_TEST_ROTATE_90;
+          
+          printf("[TestRotate] Z-axis zeroed. Target locked to 90.0. Entering ROBOT_TEST_ROTATE_90 loop...\r\n");
+          break;
+        }
+        
+        case ROBOT_TEST_ROTATE_90:
+        {
+          /* 逆时针转动 90°（本车左转逆时针会使偏航角 Yaw 增加） */
+          float yaw_err = IMU_Data.Yaw - target_angle_lock;
+          while (yaw_err > 180.0f)  yaw_err -= 360.0f;
+          while (yaw_err < -180.0f) yaw_err += 360.0f;
+          
+          /* 打印实时调试信息（限制频率为 100ms 一次，即每 5 个周期打印一次） */
+          static uint32_t last_print_tick = 0;
+          if (HAL_GetTick() - last_print_tick >= 100)
+          {
+            last_print_tick = HAL_GetTick();
+            printf("[TestRotate] Target: %.1f, Yaw: %.1f, Err: %.1f\r\n", target_angle_lock, IMU_Data.Yaw, yaw_err);
+          }
+
+          /* 缩紧死区为更精确的 3.0° */
+          if (fabs(yaw_err) < 3.0f)
+          {
+            /* 达到 90°，停顿 0.3s (300ms) */
+            Motor_Control(0, 0);
+            osDelay(300);
+            
+            /* 设定下一个逆时针转动 90° 的目标角（逆时针/左转使 Yaw 增加，所以每次加上 90°） */
+            target_angle_lock += 90.0f;
+            while (target_angle_lock > 180.0f)  target_angle_lock -= 360.0f;
+            while (target_angle_lock < -180.0f) target_angle_lock += 360.0f;
+            
+            /* 重新初始化 PD 控制器的基准值，防止目标突变产生错误的微分冲击 */
+            init_rotate_pd = 0;
+            
+            printf("[TestRotate] 90 deg rotation done! Next Target Yaw: %.1f\r\n", target_angle_lock);
+          }
+          else
+          {
+            /* 引入 PD 控制以获得阻尼效果：
+               turn_speed = Kp * error + Kd * d_error / dt
+               这里取 Kp = 0.8f, Kd_discrete = 7.5f (对应离散微分项 Kd * d_error) */
+            if (init_rotate_pd == 0)
+            {
+              last_yaw_err = yaw_err;
+              init_rotate_pd = 1;
+            }
+            float d_err = (yaw_err - last_yaw_err);
+            last_yaw_err = yaw_err;
+            
+            float turn_speed = yaw_err * 0.8f + d_err * 7.5f;
+            
+            /* 限制最大输出转速，防止电机满载滑行过冲 */
+            if (turn_speed > 18.0f)  turn_speed = 18.0f;
+            if (turn_speed < -18.0f) turn_speed = -18.0f;
+            
+            /* 只有当误差依然较大（例如大于 5.0f）但计算转速由于 Kp 过小而导致电机停转时，才应用最小死区限幅；
+               误差在 [3.0, 5.0] 范围内时，允许速度衰减到最小死区以下，依靠惯性精确滑入 3.0° 目标窗口 */
+            if (fabs(yaw_err) > 5.0f)
+            {
+              if (turn_speed > 0.0f && turn_speed < 8.0f)  turn_speed = 8.0f;
+              if (turn_speed < 0.0f && turn_speed > -8.0f) turn_speed = -8.0f;
+            }
+            
+            Motor_Control((int16_t)turn_speed, 0);
+          }
+          break;
+        }
         
         default:
           break;
@@ -1171,13 +1267,8 @@ void StartAngle_Task(void *argument)
 /* USER CODE BEGIN Application */
 void Trigger_Debug_Launch(void)
 {
-  /* 串口调试指令 'Y' 触发：小车以平行姿态放置，立即将 IMU 的 Yaw 偏航角归零，确保后续角度均为 90° 的倍数 */
-  IMU_ZeroZAxis();
-  osDelay(100); /* 等待偏航角清零写入稳定 */
-
-  robot_state = ROBOT_LAUNCH_DECIDE;
-  climb_pd_init = 0;
-  printf("[AutoClimb] Serial Debug Command 'Y' received! Yaw Z-axis reset to 0. State -> ROBOT_LAUNCH_DECIDE.\r\n");
+  /* 仅在此处切换状态，避免在串口接收中断 (ISR) 中进行任何阻塞延时操作 */
+  robot_state = ROBOT_TEST_ROTATE_PREPARE;
 }
 /* USER CODE END Application */
 

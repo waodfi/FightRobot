@@ -4,12 +4,6 @@
             "path": "."
         },
         {
-            "path": "../Software"
-        },
-        {
-            "path": "../Core"
-        },
-        {
             "path": ".."
         }
     ],

@@ -1,4 +1,5 @@
 #include "IMU.h"
+#include "main.h"  /* 包含HAL库定义，提供 HAL_Delay */
 
 IMU_Data_t IMU_Data = {0};
 
@@ -12,6 +13,16 @@ static uint8_t rx_cnt = 0;
 void IMU_Init(void)
 {
     rx_cnt = 0;
+
+    // 串口发送指令，配置 IMU 输出频率为 100Hz (0xFF 0xAA 0x03 0x09 0x00)
+    uint8_t cmd_rate[5] = {0xFF, 0xAA, 0x03, 0x09, 0x00};
+    IMU_HW_SerialSend(cmd_rate, 5);
+    HAL_Delay(10); // 延时等待串口发送及陀螺仪内部处理
+
+    // 发送保存配置指令 (0xFF 0xAA 0x00 0x00 0x00)
+    uint8_t cmd_save[5] = {0xFF, 0xAA, 0x00, 0x00, 0x00};
+    IMU_HW_SerialSend(cmd_save, 5);
+    HAL_Delay(10);
 }
 
 /**

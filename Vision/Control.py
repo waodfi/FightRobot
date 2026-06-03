@@ -44,7 +44,7 @@ import pygame
 import serial
 import math
 
-SERIAL_PORT = 'COM6'
+SERIAL_PORT = 'COM7'
 BAUD_RATE = 115200
 SEND_RATE_HZ = 50
 DEADZONE = 10
