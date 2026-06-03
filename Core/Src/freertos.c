@@ -635,6 +635,7 @@ void StartMotion_Task(void *argument)
   const uint16_t servo_step = 2;    /* 固定步进角度：每个周期移动2度 */
   static uint8_t init_rotate_pd = 0; /* 用于连续转90°测试的 PD 控制器初始化标志 */
   static float last_yaw_err = 0.0f;   /* 上一次的偏航角误差，用于微分项计算 */
+  static uint32_t climb_wall_align_start_tick = 0; /* 记录开始顶墙对齐的时间戳 */
   static uint8_t rotate_step = 0;    /* 记录完成了几次 90° 旋转 (0~3) */
   static float up_ir_values[4] = {0.0f}; /* 记录 4 个停顿位置的高位红外数值 */
   static float climb_target_angle = 0.0f; /* 登台阶段转向的目标角度 */
@@ -1092,14 +1093,22 @@ void StartMotion_Task(void *argument)
               {
                 printf("在角落\r\n");
                 
-                // 找出阻碍的两个方向
+                // 寻找具有最小传感器数值之和的相邻被阻挡方向对，以确保在噪声干扰或多向阻挡时精准定位真实墙面
                 int idx1 = -1, idx2 = -1;
+                float min_sum = 9999.0f;
+                
                 for (int i = 0; i < 4; i++)
                 {
-                  if (blocked[i])
+                  int next_i = (i + 1) % 4;
+                  if (blocked[i] && blocked[next_i])
                   {
-                    if (idx1 == -1) idx1 = i;
-                    else if (idx2 == -1) { idx2 = i; break; }
+                    float sum = up_ir_values[i] + up_ir_values[next_i];
+                    if (sum < min_sum)
+                    {
+                      min_sum = sum;
+                      idx1 = i;
+                      idx2 = next_i;
+                    }
                   }
                 }
                 
@@ -1111,18 +1120,18 @@ void StartMotion_Task(void *argument)
                   
                   saved_D_smaller = D_smaller; // 暂存较小值方向
                   
-                  // 计算较大方向的物理角度
+                  // 计算较大方向的物理角度（由于探测时车尾朝墙，此方向即为车头朝向开阔侧的方向）
                   float angle_larger = D_larger * 90.0f;
-                  if (angle_larger > 180.0f) angle_larger -= 360.0f;
-                  if (angle_larger < -180.0f) angle_larger += 360.0f;
+                  while (angle_larger > 180.0f) angle_larger -= 360.0f;
+                  while (angle_larger < -180.0f) angle_larger += 360.0f;
                   
                   climb_target_angle = angle_larger;
                   climb_next_state = ROBOT_CLIMB_FORWARD_UNTIL_UP_IR;
                   robot_state = ROBOT_CLIMB_ROTATE_TO_DIR;
                   init_rotate_pd = 0;
                   
-                  printf("[TestClimb] Corner detected! Turning to D_larger=%d (angle=%.1f), saved D_smaller=%d\r\n", 
-                         D_larger, climb_target_angle, saved_D_smaller);
+                  printf("[TestClimb] Corner detected! Selected adjacent pair %d and %d. Turning to D_larger=%d (angle=%.1f), saved D_smaller=%d\r\n", 
+                         idx1, idx2, D_larger, climb_target_angle, saved_D_smaller);
                 }
                 else
                 {
@@ -1218,6 +1227,10 @@ void StartMotion_Task(void *argument)
             {
               squaring_start_tick = HAL_GetTick();
             }
+            if (climb_next_state == ROBOT_CLIMB_FORWARD_UNTIL_WALL || climb_next_state == ROBOT_CLIMB_FORWARD_UNTIL_UP_IR)
+            {
+              climb_wall_align_start_tick = HAL_GetTick();
+            }
             printf("[TestClimb] Rotation to %.1f complete. Next state: %d\r\n", climb_target_angle, climb_next_state);
           }
           else
@@ -1247,10 +1260,10 @@ void StartMotion_Task(void *argument)
         
         case ROBOT_CLIMB_FORWARD_UNTIL_UP_IR:
         {
-          /* 前进避开角落障碍 */
+          /* 前进避开角落障碍（前行 1.5 秒以实打实走离角落侧墙） */
           Motor_Control(0, 25);
           
-          if (IR_Distance_UP > 110.0f)
+          if (HAL_GetTick() - climb_wall_align_start_tick >= 1500U)
           {
             /* 成功越过，停止并准备转弯到 D_smaller 的相反方向 */
             Motor_Control(0, 0);
@@ -1265,7 +1278,7 @@ void StartMotion_Task(void *argument)
             robot_state = ROBOT_CLIMB_ROTATE_TO_DIR;
             init_rotate_pd = 0;
             
-            printf("[TestClimb] UP_IR > 110 (%.1f). Stopping. Next: turn to opposite of D_smaller (%.1f) and move forward until wall\r\n", IR_Distance_UP, climb_target_angle);
+            printf("[TestClimb] Corner escape forward complete (1.5s). Next: turn to opposite of D_smaller (%.1f) and move forward until wall\r\n", climb_target_angle);
           }
           break;
         }
@@ -1275,12 +1288,19 @@ void StartMotion_Task(void *argument)
           /* 向前前行开路 */
           Motor_Control(0, 25);
           
-          if (IR_Distance_F > 48.0f || IR_Distance_B > 60.0f)
+          uint32_t elapsed_align = HAL_GetTick() - climb_wall_align_start_tick;
+          
+          // 过滤掉 999.0f 等无效超距值以防止误触发；结合前红外近距离判断与超时保护
+          if ((IR_Distance_F > 48.0f && IR_Distance_F < 150.0f) || 
+              (IR_Distance_B > 60.0f && IR_Distance_B < 150.0f) || 
+              (IR_Distance_F < 20.0f && IR_Distance_F > 1.0f) || 
+              elapsed_align >= 2000U)
           {
             /* 条件触发，开启 1 秒延时 */
             climb_timer = HAL_GetTick();
             robot_state = ROBOT_CLIMB_FORWARD_DELAY;
-            printf("[TestClimb] Wall condition met (F=%.1f, B=%.1f). Starting 1s forward delay...\r\n", IR_Distance_F, IR_Distance_B);
+            printf("[TestClimb] Wall condition met (F=%.1f, B=%.1f, elapsed=%lums). Starting 1s forward delay...\r\n", 
+                   IR_Distance_F, IR_Distance_B, elapsed_align);
           }
           break;
         }
