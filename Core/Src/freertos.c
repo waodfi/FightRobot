@@ -125,7 +125,12 @@ typedef enum {
     ROBOT_FINISHED          = 8,   /* 登台/测试完成：保持绝对静止 */
     ROBOT_RUNNING           = 9,   /* 运行状态：常规模式 */
     ROBOT_TEST_ROTATE_90    = 10,  /* 测试状态：输入Y后，小车逆时针连续转动90° */
-    ROBOT_TEST_ROTATE_PREPARE = 11  /* 准备状态：输入Y后，在任务中安全重置偏航角并等待 */
+    ROBOT_TEST_ROTATE_PREPARE = 11, /* 准备状态：输入Y后，在任务中安全重置偏航角并等待 */
+    ROBOT_CLIMB_ROTATE_TO_DIR = 12, /* 登台状态：转动到指定方向 */
+    ROBOT_CLIMB_FORWARD_UNTIL_UP_IR = 13, /* 登台状态：向前直走直到上方红外大于110 */
+    ROBOT_CLIMB_FORWARD_UNTIL_WALL = 14,  /* 登台状态：向前直走直到满足红外壁障条件 */
+    ROBOT_CLIMB_FORWARD_DELAY = 15,       /* 登台状态：前行延时1秒 */
+    ROBOT_CLIMB_BACKWARD_FAST = 16        /* 登台状态：全速向后冲台1秒 */
 } RobotState_e;
 
 volatile RobotState_e robot_state = ROBOT_WAITING;  /* 状态机当前状态 */
@@ -141,6 +146,7 @@ static float    target_angle_lock    = 0.0f; /* 自主控制锁定航向角 */
 static uint8_t  climb_pd_init        = 0;  /* 登台 PD 控制器初始化标志 */
 static float    last_yaw_err         = 0.0f; /* 上一次偏航角偏差 */
 static uint32_t squaring_start_tick  = 0;  /* 顶墙开始时间 */
+static uint8_t  is_test_mode         = 0;  /* 是否为串口 'Y' 触发的 270° 测试模式 */
 
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
@@ -399,7 +405,7 @@ void StartMotor_Task(void *argument)
   HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_3);
   HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_4);
 
-  /* 在任务初始化中开启TIM2�?????4个�?�道捕获中断 */
+  /* 在任务初始化中开启TIM2?????4个?道捕获中断 */
 HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
 HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_2);
 HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_3);
@@ -407,16 +413,16 @@ HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
 
   /* PID 初始化 (电机速度控制) 
      增加: 误差绝对值死区阈值(如 2.0f)，积分分离阈值(如 30.0f)
-     当绝对�?�度离目标超过 30 时切断积分防超调；相差 2 以内视为到达目标平息抖动 */
+     当绝对?度离目标超过 30 时切断积分防超调；相差 2 以内视为到达目标平息抖动 */
   for(int i = 0; i < 4; i++) {
       // (pid, Kp, Ki, Kd, MaxOut, MaxIOut, DeadBand, I_Separation)
       // 积分分离阈值 500.0f：防止启动时积分饱和；误差 < 500 时 P 项可能不足，积分逐步参与
-      // 纯 P 控制(Kp=0.65)可能难以达到目标，积分项帮助消除稳�?�误�???
+      // 纯 P 控制(Kp=0.65)可能难以达到目标，积分项帮助消除稳?误???
       PID_Init(&motor_pid[i], 0.65f, 0.20f, 0.02f, 100.0f, 100.0f, 1.0f, 500.0f); 
   }
 
   uint32_t last_pulse_count[4] = {0};
-  float filtered_speed[4] = {0.0f}; // 新增：用于平滑测速跳动的低�?�滤波数�???
+  float filtered_speed[4] = {0.0f}; // 新增：用于平滑测速跳动的低?滤波数???
   uint32_t motor_print_tick = 0;
 
   /* Infinite loop */
@@ -471,8 +477,8 @@ HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
       Motor_SetSpeed(MOTOR_1 + i, output); 
     }
 
-        /* 降低打印频率至 10Hz，加快上位机显示刷新 */
-        if (HAL_GetTick() - motor_print_tick >= 100U) {
+        /* 降低打印频率至 1Hz，使串口更清爽 */
+        if (HAL_GetTick() - motor_print_tick >= 1000U) {
           motor_print_tick = HAL_GetTick();
           printf("RPM: %.1f, %.1f, %.1f, %.1f\r\n",
             motor_rpm_norm[0], motor_rpm_norm[1], motor_rpm_norm[2], motor_rpm_norm[3]);
@@ -501,8 +507,8 @@ void StartComm_Task(void *argument)
     /* 等待 Sensor_Task 每 100ms 发来的触发信号 */
     if (osMessageQueueGet(IMU_Rx_QueueHandle, &msg, NULL, osWaitForever) == osOK)
     {
-      /* 将多行传感器输出降频至 10Hz，加快上位机显示 */
-      if (HAL_GetTick() - comm_print_tick >= 100U) {
+      /* 将多行传感器输出降频至 1Hz，加快上位机显示，使串口更清爽 */
+      if (HAL_GetTick() - comm_print_tick >= 1000U) {
         comm_print_tick = HAL_GetTick();
         printf("Roll: %.2f, Pitch: %.2f, Yaw: %.2f, Temp: %.2f\r\n", IMU_Data.Roll, IMU_Data.Pitch, IMU_Data.Yaw, IMU_Data.Temp);
         printf("IR Dist: %.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f\r\n",
@@ -629,6 +635,12 @@ void StartMotion_Task(void *argument)
   const uint16_t servo_step = 2;    /* 固定步进角度：每个周期移动2度 */
   static uint8_t init_rotate_pd = 0; /* 用于连续转90°测试的 PD 控制器初始化标志 */
   static float last_yaw_err = 0.0f;   /* 上一次的偏航角误差，用于微分项计算 */
+  static uint8_t rotate_step = 0;    /* 记录完成了几次 90° 旋转 (0~3) */
+  static float up_ir_values[4] = {0.0f}; /* 记录 4 个停顿位置的高位红外数值 */
+  static float climb_target_angle = 0.0f; /* 登台阶段转向的目标角度 */
+  static RobotState_e climb_next_state = ROBOT_FINISHED; /* 转向完成后的下一个状态 */
+  static uint32_t climb_timer = 0;    /* 登台用计时器 */
+  static int saved_D_smaller = 0;     /* 角落判定下，暂存数值较小的传感器方向 */
 
   /* 自适应软启动基准校准（防上电时手拿开的误差） */
   /* 给 Sensor_Task 充裕的通电稳定与采样等待时间，防止开机读取 0 盲值 */
@@ -712,6 +724,7 @@ void StartMotion_Task(void *argument)
         
         case ROBOT_LAUNCH_DECIDE:
         {
+          is_test_mode = 0; /* 确认为官方正式登台流程 */
           /* 启动决策：利用 几何距离(不含前红外) + 底盘灰度 融合双重锁进行判定，达到 100% 绝对可靠性。
              - 台上特征：
                1. 灰度特征：底盘处于擂台之上，灰度反射率高，读数明显低于台下（擂台正中央及边缘灰度较低，任意底盘灰度传感器 < 180.0f）。
@@ -872,7 +885,7 @@ void StartMotion_Task(void *argument)
           else
           {
             /* 阶段 1：使用陀螺仪反馈，原位旋转至完美的 90° 的倍数对准边缘 */
-            float yaw_err = target_angle_lock - IMU_Data.Yaw;
+            float yaw_err = IMU_Data.Yaw - target_angle_lock;
             while (yaw_err > 180.0f)  yaw_err -= 360.0f;
             while (yaw_err < -180.0f) yaw_err += 360.0f;
             
@@ -927,7 +940,7 @@ void StartMotion_Task(void *argument)
         case ROBOT_CLIMBING_OFFSTAGE:
         {
           /* 台下闭环登台：全速倒车 + 陀螺仪锁角PD纠偏（闭环控制） */
-          float yaw_err = target_angle_lock - IMU_Data.Yaw;
+          float yaw_err = IMU_Data.Yaw - target_angle_lock;
           while (yaw_err > 180.0f)  yaw_err -= 360.0f;
           while (yaw_err < -180.0f) yaw_err += 360.0f;
           
@@ -951,16 +964,30 @@ void StartMotion_Task(void *argument)
           uint32_t elapsed = HAL_GetTick() - climb_start_tick;
           
           /* 登台成功判定：
-             1. 首个 1.0 秒 (CLIMB_BLIND_DURATION_MS) 为盲爬行阶段，完全忽略灰度传感器，全速后退以防中途虚假停止；
-             2. 1.0 秒后，启动主动成功判定：当 Grey_Front < ONSTAGE_GREY_SUCCESS_THRESHOLD 时说明已完全登台；
-             3. 3.5 秒 (CLIMB_OFFSTAGE_TIMEOUT_MS) 超时保护。 */
-          if (elapsed >= CLIMB_BLIND_DURATION_MS)
+             如果是串口 'Y' 测试模式：运行时间到达 1.0 秒 (1000ms) 时立即刹车停止，进入 ROBOT_FINISHED。
+             如果是官方正式登台：
+               1. 首个 1.0 秒 (CLIMB_BLIND_DURATION_MS) 为盲爬行阶段，完全忽略灰度传感器，全速后退；
+               2. 1.0 秒后，启动主动成功判定：当 Grey_Front < ONSTAGE_GREY_SUCCESS_THRESHOLD 时说明已完全登台；
+               3. 3.5 秒 (CLIMB_OFFSTAGE_TIMEOUT_MS) 超时保护。 */
+          if (is_test_mode)
           {
-            if (Grey_Front < ONSTAGE_GREY_SUCCESS_THRESHOLD || (elapsed >= CLIMB_OFFSTAGE_TIMEOUT_MS))
+            if (elapsed >= 1000U)
             {
               Motor_Control(0, 0);
               robot_state = ROBOT_FINISHED;
-              printf("[AutoClimb] Climbing success! Elapsed: %lums, Front Grey: %.1f. State -> ROBOT_FINISHED. Staying static.\r\n", elapsed, Grey_Front);
+              printf("[TestClimb] Test climbing complete! Elapsed: %lums. State -> ROBOT_FINISHED. Staying static.\r\n", elapsed);
+            }
+          }
+          else
+          {
+            if (elapsed >= CLIMB_BLIND_DURATION_MS)
+            {
+              if (Grey_Front < ONSTAGE_GREY_SUCCESS_THRESHOLD || (elapsed >= CLIMB_OFFSTAGE_TIMEOUT_MS))
+              {
+                Motor_Control(0, 0);
+                robot_state = ROBOT_FINISHED;
+                printf("[AutoClimb] Climbing success! Elapsed: %lums, Front Grey: %.1f. State -> ROBOT_FINISHED. Staying static.\r\n", elapsed, Grey_Front);
+              }
             }
           }
           break;
@@ -975,6 +1002,7 @@ void StartMotion_Task(void *argument)
 
         case ROBOT_TEST_ROTATE_PREPARE:
         {
+          is_test_mode = 1; /* 标记为测试模式 */
           /* 1. 停止小车电机，准备校准 */
           Motor_Control(0, 0);
           
@@ -992,52 +1020,161 @@ void StartMotion_Task(void *argument)
             }
           }
           
-          /* 4. 初始化转向参数并跳转到 90° 旋转测试状态（本车逆时针/左转会导致偏航角 Yaw 增加） */
+          /* 4. 开始和每次停顿的时候记录后方靠上的传感器数值 (S0) */
+          up_ir_values[0] = IR_Distance_UP;
+          rotate_step = 0;
+          
+          /* 5. 初始化转向参数并跳转到 90° 旋转测试状态（本车逆时针/左转会导致偏航角 Yaw 增加） */
           target_angle_lock = 90.0f;
           init_rotate_pd = 0; /* 标志位重置 */
           robot_state = ROBOT_TEST_ROTATE_90;
           
-          printf("[TestRotate] Z-axis zeroed. Target locked to 90.0. Entering ROBOT_TEST_ROTATE_90 loop...\r\n");
+          printf("[TestRotate] Z-axis zeroed. Target locked to 90.0. Start IR: S0=%.1f. Entering ROBOT_TEST_ROTATE_90 loop...\r\n", up_ir_values[0]);
           break;
         }
         
         case ROBOT_TEST_ROTATE_90:
         {
-          /* 逆时针转动 90°（本车左转逆时针会使偏航角 Yaw 增加） */
+          /* 逆时针转动 90° */
           float yaw_err = IMU_Data.Yaw - target_angle_lock;
           while (yaw_err > 180.0f)  yaw_err -= 360.0f;
           while (yaw_err < -180.0f) yaw_err += 360.0f;
           
-          /* 打印实时调试信息（限制频率为 100ms 一次，即每 5 个周期打印一次） */
+          /* 降低实时调试打印频率至 300ms 一次 */
           static uint32_t last_print_tick = 0;
-          if (HAL_GetTick() - last_print_tick >= 100)
+          if (HAL_GetTick() - last_print_tick >= 300)
           {
             last_print_tick = HAL_GetTick();
-            printf("[TestRotate] Target: %.1f, Yaw: %.1f, Err: %.1f\r\n", target_angle_lock, IMU_Data.Yaw, yaw_err);
+            printf("[TestRotate] Step: %d, Target: %.1f, Yaw: %.1f, Err: %.1f\r\n", rotate_step, target_angle_lock, IMU_Data.Yaw, yaw_err);
           }
 
           /* 缩紧死区为更精确的 3.0° */
           if (fabs(yaw_err) < 3.0f)
           {
-            /* 达到 90°，停顿 0.3s (300ms) */
+            /* 达到当前目标角度，停顿 0.3s (300ms) */
             Motor_Control(0, 0);
             osDelay(300);
             
-            /* 设定下一个逆时针转动 90° 的目标角（逆时针/左转使 Yaw 增加，所以每次加上 90°） */
-            target_angle_lock += 90.0f;
-            while (target_angle_lock > 180.0f)  target_angle_lock -= 360.0f;
-            while (target_angle_lock < -180.0f) target_angle_lock += 360.0f;
+            /* 每次停顿的时候记录后方靠上的传感器数值 */
+            rotate_step++;
+            if (rotate_step <= 3)
+            {
+              up_ir_values[rotate_step] = IR_Distance_UP;
+              printf("[TestRotate] Stop recorded: S%d=%.1f\r\n", rotate_step, up_ir_values[rotate_step]);
+            }
             
-            /* 重新初始化 PD 控制器的基准值，防止目标突变产生错误的微分冲击 */
-            init_rotate_pd = 0;
-            
-            printf("[TestRotate] 90 deg rotation done! Next Target Yaw: %.1f\r\n", target_angle_lock);
+            /* 如果转完了 270°（即 rotate_step 达到 3），进行边缘/角落判定，并启动对应登台逻辑 */
+            if (rotate_step >= 3)
+            {
+              uint8_t blocked[4] = {0};
+              int blocked_count = 0;
+              for (int i = 0; i < 4; i++)
+              {
+                if (up_ir_values[i] < 95.0f)
+                {
+                  blocked[i] = 1;
+                  blocked_count++;
+                }
+              }
+              
+              // 首尾（index 0 和 3）也算相邻，环形相邻检查
+              uint8_t has_adjacent = (blocked[0] && blocked[1]) || 
+                                     (blocked[1] && blocked[2]) || 
+                                     (blocked[2] && blocked[3]) || 
+                                     (blocked[3] && blocked[0]);
+              
+              printf("[TestRotate] Scan complete! S0=%.1f, S1=%.1f, S2=%.1f, S3=%.1f\r\n", 
+                     up_ir_values[0], up_ir_values[1], up_ir_values[2], up_ir_values[3]);
+              printf("[TestRotate] Blocked status: [%d, %d, %d, %d] (count=%d, has_adj=%d)\r\n",
+                     blocked[0], blocked[1], blocked[2], blocked[3], blocked_count, has_adjacent);
+              
+              if (has_adjacent)
+              {
+                printf("在角落\r\n");
+                
+                // 找出阻碍的两个方向
+                int idx1 = -1, idx2 = -1;
+                for (int i = 0; i < 4; i++)
+                {
+                  if (blocked[i])
+                  {
+                    if (idx1 == -1) idx1 = i;
+                    else if (idx2 == -1) { idx2 = i; break; }
+                  }
+                }
+                
+                if (idx1 != -1 && idx2 != -1)
+                {
+                  // 比较这两个方向上靠上的传感器数值大小
+                  int D_larger = (up_ir_values[idx1] > up_ir_values[idx2]) ? idx1 : idx2;
+                  int D_smaller = (up_ir_values[idx1] > up_ir_values[idx2]) ? idx2 : idx1;
+                  
+                  saved_D_smaller = D_smaller; // 暂存较小值方向
+                  
+                  // 计算较大方向的物理角度
+                  float angle_larger = D_larger * 90.0f;
+                  if (angle_larger > 180.0f) angle_larger -= 360.0f;
+                  if (angle_larger < -180.0f) angle_larger += 360.0f;
+                  
+                  climb_target_angle = angle_larger;
+                  climb_next_state = ROBOT_CLIMB_FORWARD_UNTIL_UP_IR;
+                  robot_state = ROBOT_CLIMB_ROTATE_TO_DIR;
+                  init_rotate_pd = 0;
+                  
+                  printf("[TestClimb] Corner detected! Turning to D_larger=%d (angle=%.1f), saved D_smaller=%d\r\n", 
+                         D_larger, climb_target_angle, saved_D_smaller);
+                }
+                else
+                {
+                  robot_state = ROBOT_FINISHED;
+                }
+              }
+              else if (blocked_count == 1)
+              {
+                printf("在边缘\r\n");
+                
+                // 找出阻碍的那一个方向
+                int D_blocked = 0;
+                for (int i = 0; i < 4; i++)
+                {
+                  if (blocked[i]) { D_blocked = i; break; }
+                }
+                
+                // 计算相反方向物理角度 (D_blocked * 90 + 180)
+                float opp_angle = (D_blocked * 90.0f) + 180.0f;
+                while (opp_angle > 180.0f) opp_angle -= 360.0f;
+                while (opp_angle < -180.0f) opp_angle += 360.0f;
+                
+                climb_target_angle = opp_angle;
+                climb_next_state = ROBOT_CLIMB_FORWARD_UNTIL_WALL;
+                robot_state = ROBOT_CLIMB_ROTATE_TO_DIR;
+                init_rotate_pd = 0;
+                
+                printf("[TestClimb] Edge detected! Turning to opposite of D_blocked=%d (opp_angle=%.1f) to face fence\r\n", 
+                       D_blocked, climb_target_angle);
+              }
+              else
+              {
+                printf("不在边缘且不在角落 (障碍数: %d)，小车停下\r\n", blocked_count);
+                robot_state = ROBOT_FINISHED;
+              }
+            }
+            else
+            {
+              /* 设定下一个逆时针转动 90° 的目标角（逆时针/左转使 Yaw 增加，所以每次加上 90°） */
+              target_angle_lock += 90.0f;
+              while (target_angle_lock > 180.0f)  target_angle_lock -= 360.0f;
+              while (target_angle_lock < -180.0f) target_angle_lock += 360.0f;
+              
+              /* 重新初始化 PD 控制器的基准值，防止目标突变产生错误的微分冲击 */
+              init_rotate_pd = 0;
+              
+              printf("[TestRotate] Moving to Next Target Yaw: %.1f\r\n", target_angle_lock);
+            }
           }
           else
           {
-            /* 引入 PD 控制以获得阻尼效果：
-               turn_speed = Kp * error + Kd * d_error / dt
-               这里取 Kp = 0.8f, Kd_discrete = 7.5f (对应离散微分项 Kd * d_error) */
+            /* 引入 PD 控制以获得阻尼效果 */
             if (init_rotate_pd == 0)
             {
               last_yaw_err = yaw_err;
@@ -1052,8 +1189,7 @@ void StartMotion_Task(void *argument)
             if (turn_speed > 18.0f)  turn_speed = 18.0f;
             if (turn_speed < -18.0f) turn_speed = -18.0f;
             
-            /* 只有当误差依然较大（例如大于 5.0f）但计算转速由于 Kp 过小而导致电机停转时，才应用最小死区限幅；
-               误差在 [3.0, 5.0] 范围内时，允许速度衰减到最小死区以下，依靠惯性精确滑入 3.0° 目标窗口 */
+            /* 误差限幅控制 */
             if (fabs(yaw_err) > 5.0f)
             {
               if (turn_speed > 0.0f && turn_speed < 8.0f)  turn_speed = 8.0f;
@@ -1061,6 +1197,120 @@ void StartMotion_Task(void *argument)
             }
             
             Motor_Control((int16_t)turn_speed, 0);
+          }
+          break;
+        }
+        
+        case ROBOT_CLIMB_ROTATE_TO_DIR:
+        {
+          float yaw_err = IMU_Data.Yaw - climb_target_angle;
+          while (yaw_err > 180.0f)  yaw_err -= 360.0f;
+          while (yaw_err < -180.0f) yaw_err += 360.0f;
+          
+          if (fabs(yaw_err) < 3.0f)
+          {
+            /* 转向完成：停止电机，并切换到下一阶段 */
+            Motor_Control(0, 0);
+            osDelay(200);
+            init_rotate_pd = 0; // 重置 PD 标志
+            robot_state = climb_next_state;
+            if (climb_next_state == ROBOT_SQUARING)
+            {
+              squaring_start_tick = HAL_GetTick();
+            }
+            printf("[TestClimb] Rotation to %.1f complete. Next state: %d\r\n", climb_target_angle, climb_next_state);
+          }
+          else
+          {
+            /* 转向 PD 控制 */
+            if (init_rotate_pd == 0)
+            {
+              last_yaw_err = yaw_err;
+              init_rotate_pd = 1;
+            }
+            float d_err = (yaw_err - last_yaw_err);
+            last_yaw_err = yaw_err;
+            
+            float turn_speed = yaw_err * 0.8f + d_err * 7.5f;
+            if (turn_speed > 18.0f)  turn_speed = 18.0f;
+            if (turn_speed < -18.0f) turn_speed = -18.0f;
+            
+            if (fabs(yaw_err) > 5.0f)
+            {
+              if (turn_speed > 0.0f && turn_speed < 8.0f)  turn_speed = 8.0f;
+              if (turn_speed < 0.0f && turn_speed > -8.0f) turn_speed = -8.0f;
+            }
+            Motor_Control((int16_t)turn_speed, 0);
+          }
+          break;
+        }
+        
+        case ROBOT_CLIMB_FORWARD_UNTIL_UP_IR:
+        {
+          /* 前进避开角落障碍 */
+          Motor_Control(0, 25);
+          
+          if (IR_Distance_UP > 110.0f)
+          {
+            /* 成功越过，停止并准备转弯到 D_smaller 的相反方向 */
+            Motor_Control(0, 0);
+            osDelay(200);
+            
+            float opposite_smaller = (saved_D_smaller * 90.0f) + 180.0f;
+            while (opposite_smaller > 180.0f) opposite_smaller -= 360.0f;
+            while (opposite_smaller < -180.0f) opposite_smaller += 360.0f;
+            
+            climb_target_angle = opposite_smaller;
+            climb_next_state = ROBOT_CLIMB_FORWARD_UNTIL_WALL;
+            robot_state = ROBOT_CLIMB_ROTATE_TO_DIR;
+            init_rotate_pd = 0;
+            
+            printf("[TestClimb] UP_IR > 110 (%.1f). Stopping. Next: turn to opposite of D_smaller (%.1f) and move forward until wall\r\n", IR_Distance_UP, climb_target_angle);
+          }
+          break;
+        }
+        
+        case ROBOT_CLIMB_FORWARD_UNTIL_WALL:
+        {
+          /* 向前前行开路 */
+          Motor_Control(0, 25);
+          
+          if (IR_Distance_F > 48.0f || IR_Distance_B > 60.0f)
+          {
+            /* 条件触发，开启 1 秒延时 */
+            climb_timer = HAL_GetTick();
+            robot_state = ROBOT_CLIMB_FORWARD_DELAY;
+            printf("[TestClimb] Wall condition met (F=%.1f, B=%.1f). Starting 1s forward delay...\r\n", IR_Distance_F, IR_Distance_B);
+          }
+          break;
+        }
+        
+        case ROBOT_CLIMB_FORWARD_DELAY:
+        {
+          /* 继续前行 1 秒 */
+          Motor_Control(0, 25);
+          
+          if (HAL_GetTick() - climb_timer >= 1000U)
+          {
+            /* 1秒到，全速向后倒退冲上擂台 */
+            climb_timer = HAL_GetTick();
+            robot_state = ROBOT_CLIMB_BACKWARD_FAST;
+            printf("[TestClimb] Delay complete. Launching full speed backward for 1s...\r\n");
+          }
+          break;
+        }
+        
+        case ROBOT_CLIMB_BACKWARD_FAST:
+        {
+          /* 全速向后冲台 */
+          Motor_Control(0, -100);
+          
+          if (HAL_GetTick() - climb_timer >= 1000U)
+          {
+            /* 登台结束，刹车停止 */
+            Motor_Control(0, 0);
+            robot_state = ROBOT_FINISHED;
+            printf("[TestClimb] Onstage complete! Robot stopped. State -> ROBOT_FINISHED\r\n");
           }
           break;
         }
@@ -1268,6 +1518,7 @@ void StartAngle_Task(void *argument)
 void Trigger_Debug_Launch(void)
 {
   /* 仅在此处切换状态，避免在串口接收中断 (ISR) 中进行任何阻塞延时操作 */
+  is_test_mode = 1; /* 标记为测试模式 */
   robot_state = ROBOT_TEST_ROTATE_PREPARE;
 }
 /* USER CODE END Application */
