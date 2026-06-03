@@ -19,6 +19,9 @@
 #define Grey_Left grey_value[2]        // 左侧灰度传感器
 #define Grey_Right grey_value[0]       // 右侧灰度传感器
 
-
+// 新增两路 TOF200C 激光测距全局变量声明
+extern uint16_t laser_dist_1;          // 激光测距 1 (SCL=PD0, SDA=PE3)
+extern uint16_t laser_dist_2;          // 激光测距 2 (SCL=PD10, SDA=PD14)
 
 #endif /* CONFIG_H */
+

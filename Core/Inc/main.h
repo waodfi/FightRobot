@@ -53,7 +53,8 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+extern uint16_t laser_dist_1;
+extern uint16_t laser_dist_2;
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

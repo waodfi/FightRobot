@@ -73,6 +73,9 @@ float ir_distance[9];
 
 uint8_t sw1, sw2, sw3, sw4; // 4???????
 
+uint16_t laser_dist_1 = 0; // 激光测距 1
+uint16_t laser_dist_2 = 0; // 激光测距 2
+
 extern float motor_target_speed[4];
 
 /* USER CODE END PV */

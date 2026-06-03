@@ -4,10 +4,10 @@
 // 硬件引脚定义 (完全使用原红外光电开关对应的引脚)
 // ==========================================
 // BUS 1
-#define SCL1_PORT   GPIOE
-#define SCL1_PIN    GPIO_PIN_3
-#define SDA1_PORT   GPIOD
-#define SDA1_PIN    GPIO_PIN_0
+#define SCL1_PORT   GPIOD
+#define SCL1_PIN    GPIO_PIN_0
+#define SDA1_PORT   GPIOE
+#define SDA1_PIN    GPIO_PIN_3
 
 // BUS 2
 #define SCL2_PORT   GPIOD
@@ -20,7 +20,7 @@
  */
 static void SoftI2C_Delay(void)
 {
-    for(volatile uint32_t i = 0; i < 40; i++) {
+    for(volatile uint32_t i = 0; i < 1200; i++) {
         __NOP();
     }
 }
@@ -140,7 +140,7 @@ uint8_t SoftI2C_ReadByte(SoftI2C_Bus_e bus, uint8_t ack)
         SoftI2C_SetSCL(bus, 0);
         SoftI2C_Delay();
         SoftI2C_SetSCL(bus, 1);
-        
+        SoftI2C_Delay();
         receive_data <<= 1;
         if (SoftI2C_ReadSDA(bus)) {
             receive_data++;

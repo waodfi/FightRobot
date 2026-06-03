@@ -37,6 +37,8 @@
 #include "Servo.h"
 #include "Motion.h"
 #include "Machine_Vision.h"
+#include "SoftI2C.h"
+#include "TOF050C.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -130,7 +132,10 @@ typedef enum {
     ROBOT_CLIMB_FORWARD_UNTIL_UP_IR = 13, /* 登台状态：向前直走直到上方红外大于110 */
     ROBOT_CLIMB_FORWARD_UNTIL_WALL = 14,  /* 登台状态：向前直走直到满足红外壁障条件 */
     ROBOT_CLIMB_FORWARD_DELAY = 15,       /* 登台状态：前行延时1秒 */
-    ROBOT_CLIMB_BACKWARD_FAST = 16        /* 登台状态：全速向后冲台1秒 */
+    ROBOT_CLIMB_BACKWARD_FAST = 16,       /* 登台状态：全速向后冲台1秒 */
+    ROBOT_TEST_ATTACK_PREPARE = 17,       /* 测试状态：自主识别并进攻准备 */
+    ROBOT_TEST_ATTACK_RUNNING = 18,       /* 测试状态：自主识别并进攻识别中心 */
+    ROBOT_TEST_ATTACK_MOVE    = 19        /* 测试状态：自主识别并进攻后冲刺0.5S */
 } RobotState_e;
 
 volatile RobotState_e robot_state = ROBOT_WAITING;  /* 状态机当前状态 */
@@ -518,6 +523,7 @@ void StartComm_Task(void *argument)
         printf("Grey(F,B,L,R): %.1f, %.1f, %.1f, %.1f\r\n",grey_value[0], grey_value[1], grey_value[2], grey_value[3]);
 
         printf("Photoelectric(SW1~SW4): %d, %d, %d, %d\r\n", sw1, sw2, sw3, sw4);
+        printf("Laser(1,2): %d, %d mm\r\n", laser_dist_1, laser_dist_2);
       }
       
       //printf("Motor Pulses: %lu, %lu, %lu, %lu\r\n", 
@@ -540,7 +546,11 @@ void StartSensor_Task(void *argument)
   uint32_t trigger_msg = 1;
   Grey_Init();
   IR_Init();
-  IR_Sensor_Init();
+  
+  // 初始化两路 TOF200C 激光测距传感器 (软件 I2C 总线)
+  TOF050C_Init(SOFT_I2C_BUS_1);
+  TOF050C_Init(SOFT_I2C_BUS_2);
+  
   /* Infinite loop */
   for(;;)
   {
@@ -550,11 +560,19 @@ void StartSensor_Task(void *argument)
     /* 计算红外测距 */
     IR_CalculateDistances(&adc_raw_data[4], ir_distance);
 
-    /* 计算光电开关状态 */
-    sw1 = IR_Sensor_Read(IR_SENSOR_1);
-    sw2 = IR_Sensor_Read(IR_SENSOR_2);
-    sw3 = IR_Sensor_Read(IR_SENSOR_3);
-    sw4 = IR_Sensor_Read(IR_SENSOR_4);
+    /* 读取两路激光测距 */
+    laser_dist_1 = TOF050C_ReadDistance(SOFT_I2C_BUS_1);
+    laser_dist_2 = TOF050C_ReadDistance(SOFT_I2C_BUS_2);
+
+    /* 
+     * 原红外光电引脚已被复用为激光软件 I2C 通信引脚。
+     * 为避免 I2C 数据通信时的电平变化被误判为光电开关触发，
+     * 禁用原物理引脚读取逻辑，将原光电状态变量恒设为 0。
+     */
+    sw1 = 0;
+    sw2 = 0;
+    sw3 = 0;
+    sw4 = 0;
 
     /* 向队列发送触发标志给 Comm_Task */
     osMessageQueuePut(IMU_Rx_QueueHandle, &trigger_msg, 0, 0);
@@ -1227,7 +1245,7 @@ void StartMotion_Task(void *argument)
             {
               squaring_start_tick = HAL_GetTick();
             }
-            if (climb_next_state == ROBOT_CLIMB_FORWARD_UNTIL_WALL || climb_next_state == ROBOT_CLIMB_FORWARD_UNTIL_UP_IR)
+            if (climb_next_state == ROBOT_CLIMB_FORWARD_UNTIL_WALL || climb_next_state == ROBOT_CLIMB_FORWARD_UNTIL_UP_IR || climb_next_state == ROBOT_TEST_ATTACK_MOVE)
             {
               climb_wall_align_start_tick = HAL_GetTick();
             }
@@ -1334,6 +1352,137 @@ void StartMotion_Task(void *argument)
           }
           break;
         }
+
+        case ROBOT_TEST_ATTACK_PREPARE:
+        {
+          /* 1. 停止电机 */
+          Motor_Control(0, 0);
+          /* 2. MPU6050 清零 */
+          IMU_ZeroZAxis();
+          
+          /* 3. 在任务上下文中安全地等待最多 500ms 直到读取到真实的零偏数据 */
+          uint32_t wait_start = HAL_GetTick();
+          while (HAL_GetTick() - wait_start < 500)
+          {
+            osDelay(20);
+            if (fabs(IMU_Data.Yaw) < 1.0f)
+            {
+              break;
+            }
+          }
+          
+          printf("[TestAttack] MPU6050 zeroed. Entering ROBOT_TEST_ATTACK_RUNNING...\r\n");
+          robot_state = ROBOT_TEST_ATTACK_RUNNING;
+          break;
+        }
+
+        case ROBOT_TEST_ATTACK_RUNNING:
+        {
+          /* 获取 IR 距离，依据自主识别敌人步骤计算转角 */
+          float dist[8];
+          dist[0] = ir_distance[0]; // 前方
+          dist[1] = ir_distance[1]; // 左前
+          dist[2] = ir_distance[8]; // 左侧 (交换后)
+          dist[3] = ir_distance[3]; // 左后
+          dist[4] = ir_distance[5]; // 后方
+          dist[5] = ir_distance[4]; // 右后
+          dist[6] = ir_distance[6]; // 右侧 (交换后)
+          dist[7] = ir_distance[2]; // 右前
+          
+          /* 判断各方向是否触发，前方<20，其余<50 */
+          int trig[8];
+          for(int i = 0; i < 8; i++) {
+              if (i == 0) trig[i] = (dist[i] < 20.0f) ? 1 : 0;
+              else trig[i] = (dist[i] < 50.0f) ? 1 : 0;
+          }
+          
+          int match_3 = -1;
+          for(int i = 0; i < 8; i++) {
+              int prev = (i + 7) % 8;
+              int next = (i + 1) % 8;
+              if (trig[prev] && trig[i] && trig[next]) {
+                  match_3 = i;
+                  break;
+              }
+          }
+          
+          int match_2_1 = -1, match_2_2 = -1;
+          if (match_3 == -1) {
+              for(int i = 0; i < 8; i++) {
+                  int next = (i + 1) % 8;
+                  if (trig[i] && trig[next]) {
+                      match_2_1 = i;
+                      match_2_2 = next;
+                      break;
+                  }
+              }
+          }
+          
+          int match_1 = -1;
+          if (match_3 == -1 && match_2_1 == -1) {
+              for(int i = 0; i < 8; i++) {
+                  if (trig[i]) {
+                      match_1 = i;
+                      break;
+                  }
+              }
+          }
+          
+          float t_angle = 0.0f;
+          int found = 0;
+          
+          if (match_3 != -1) {
+              t_angle = match_3 * 45.0f;
+              found = 1;
+              printf("[TestAttack] 3 adjacent found at index %d\r\n", match_3);
+          } else if (match_2_1 != -1) {
+              if (match_2_1 == 7 && match_2_2 == 0) {
+                  t_angle = 337.5f; /* (-45+0)/2 = -22.5 => 337.5 */
+              } else {
+                  t_angle = (match_2_1 + match_2_2) * 45.0f / 2.0f;
+              }
+              found = 1;
+              printf("[TestAttack] 2 adjacent found at %d, %d\r\n", match_2_1, match_2_2);
+          } else if (match_1 != -1) {
+              t_angle = match_1 * 45.0f;
+              found = 1;
+              printf("[TestAttack] Single target found at index %d\r\n", match_1);
+          }
+          
+          if (found) {
+              /* 角度标准化到 -180 ~ 180 */
+              while (t_angle > 180.0f) t_angle -= 360.0f;
+              while (t_angle < -180.0f) t_angle += 360.0f;
+              
+              if (fabs(t_angle) < 5.0f) { // 直行
+                 robot_state = ROBOT_TEST_ATTACK_MOVE;
+                 climb_wall_align_start_tick = HAL_GetTick();
+                 printf("[TestAttack] Target is front. Moving immediately...\r\n");
+              } else {
+                 climb_target_angle = t_angle;
+                 climb_next_state = ROBOT_TEST_ATTACK_MOVE;
+                 robot_state = ROBOT_CLIMB_ROTATE_TO_DIR;
+                 init_rotate_pd = 0;
+                 printf("[TestAttack] Turning to %.1f...\r\n", climb_target_angle);
+              }
+          }
+          break;
+        }
+
+        case ROBOT_TEST_ATTACK_MOVE:
+        {
+          /* 向前移动0.5S */
+          Motor_Control(0, 40); /* 假设速度设为40 */
+          
+          if (HAL_GetTick() - climb_wall_align_start_tick >= 500U)
+          {
+            /* 0.5s时间到 */
+            Motor_Control(0, 0);
+            robot_state = ROBOT_FINISHED;
+            printf("[TestAttack] Move complete. Test attack finished.\r\n");
+          }
+          break;
+        }
         
         default:
           break;
@@ -1396,12 +1545,12 @@ void StartMotion_Task(void *argument)
         /* ========== 遥控模式 ========== */
         if (control_mode == 0) 
         { 
-          /* 在遥控模式下，按下 gamepad Y 键 (buttons & 8) 立即进入自主登台决策流程 */
+          /* 在遥控模式下，按下 gamepad Y 键 (buttons & 8) 立即进入自主寻找敌人进攻测试 */
           if ((ctrl.buttons & 8) && !(prev_buttons & 8))
           {
-            robot_state = ROBOT_LAUNCH_DECIDE;
+            robot_state = ROBOT_TEST_ATTACK_PREPARE;
             climb_pd_init = 0; /* 清空 PD 标志 */
-            printf("[AutoClimb] Gamepad 'Y' Debug Trigger! State -> ROBOT_LAUNCH_DECIDE.\r\n");
+            printf("[TestAttack] Gamepad 'Y' Trigger! State -> ROBOT_TEST_ATTACK_PREPARE.\r\n");
           }
 
           /* 始终通过统一入口写入基础摇杆指令，角度环会在 Angle_Task 中叠加修正 */
@@ -1539,7 +1688,7 @@ void Trigger_Debug_Launch(void)
 {
   /* 仅在此处切换状态，避免在串口接收中断 (ISR) 中进行任何阻塞延时操作 */
   is_test_mode = 1; /* 标记为测试模式 */
-  robot_state = ROBOT_TEST_ROTATE_PREPARE;
+  robot_state = ROBOT_TEST_ATTACK_PREPARE;
 }
 /* USER CODE END Application */
 
