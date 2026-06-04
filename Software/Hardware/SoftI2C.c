@@ -153,3 +153,33 @@ uint8_t SoftI2C_ReadByte(SoftI2C_Bus_e bus, uint8_t ack)
     
     return receive_data;
 }
+
+void SoftI2C_Recover(SoftI2C_Bus_e bus)
+{
+    // 写入 1 到 SDA，释放 SDA 线控制权
+    SoftI2C_SetSDA(bus, 1);
+    SoftI2C_Delay();
+    
+    // 如果读取 SDA 发现依然是 0，说明有从设备由于上次传输未完成，正拉低着 SDA 导致总线锁死
+    if (SoftI2C_ReadSDA(bus) == 0)
+    {
+        // 尝试发送最多 9 个时钟脉冲，直至从机释放 SDA
+        for (uint8_t i = 0; i < 9; i++)
+        {
+            SoftI2C_SetSCL(bus, 0);
+            SoftI2C_Delay();
+            SoftI2C_SetSCL(bus, 1);
+            SoftI2C_Delay();
+            
+            // 每次时钟上升沿之后，读取 SDA 状态
+            if (SoftI2C_ReadSDA(bus) == 1)
+            {
+                break;
+            }
+        }
+        
+        // 重新发送 START + STOP 信号以重置从机的状态机
+        SoftI2C_Start(bus);
+        SoftI2C_Stop(bus);
+    }
+}

@@ -27,6 +27,7 @@ void SoftI2C_NAck(SoftI2C_Bus_e bus);
 
 void SoftI2C_WriteByte(SoftI2C_Bus_e bus, uint8_t data);
 uint8_t SoftI2C_ReadByte(SoftI2C_Bus_e bus, uint8_t ack);
+void SoftI2C_Recover(SoftI2C_Bus_e bus);
 
 #ifdef __cplusplus
 }

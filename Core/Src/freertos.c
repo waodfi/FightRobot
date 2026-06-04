@@ -135,7 +135,8 @@ typedef enum {
     ROBOT_CLIMB_BACKWARD_FAST = 16,       /* 登台状态：全速向后冲台1秒 */
     ROBOT_TEST_ATTACK_PREPARE = 17,       /* 测试状态：自主识别并进攻准备 */
     ROBOT_TEST_ATTACK_RUNNING = 18,       /* 测试状态：自主识别并进攻识别中心 */
-    ROBOT_TEST_ATTACK_MOVE    = 19        /* 测试状态：自主识别并进攻后冲刺0.5S */
+    ROBOT_TEST_ATTACK_MOVE    = 19,       /* 测试状态：自主识别并进攻后冲刺0.5S */
+    ROBOT_FIGHT_ATTACK_MOVE   = 20        /* 实战状态：追踪敌人直到撞边缘 */
 } RobotState_e;
 
 volatile RobotState_e robot_state = ROBOT_WAITING;  /* 状态机当前状态 */
@@ -1483,6 +1484,43 @@ void StartMotion_Task(void *argument)
           }
           break;
         }
+
+        case ROBOT_FIGHT_ATTACK_MOVE:
+        {
+          /* 实战冲击追击状态：全速向前冲击敌人 */
+          Motor_Control(0, 40);
+          
+          /* 实时检测边缘：一旦有一侧激光检测到边缘值（> 260），立即制动、退后、转身，重回巡台 */
+          if (laser_dist_1 > 260 || laser_dist_2 > 260)
+          {
+            printf("[FightAttack] Edge detected (Laser1: %d, Laser2: %d). Canceling attack, backing up and turning...\r\n", laser_dist_1, laser_dist_2);
+            
+            /* 1. 强力反向制动 80ms 快速消能，随后后退 220ms */
+            Motor_Control(0, -60);
+            osDelay(80);
+            Motor_Control(0, -22);
+            osDelay(220);
+            
+            /* 2. 转向避让：降低转弯速度（-60 -> -35），转向时间 450ms */
+            if (laser_dist_1 > 260 && laser_dist_2 <= 260) {
+              Motor_Control(-35, 0); // 左侧偏离，向右后退左转
+            } else if (laser_dist_1 <= 260 && laser_dist_2 > 260) {
+              Motor_Control(35, 0);  // 右侧偏离，向左转
+            } else {
+              Motor_Control(-35, 0); // 双侧或异常，默认左转
+            }
+            osDelay(450);
+            
+            /* 3. 停止转向 */
+            Motor_Control(0, 0);
+            osDelay(125);
+            
+            /* 4. 重置状态为 ROBOT_RUNNING，恢复常规巡台 */
+            robot_state = ROBOT_RUNNING;
+            printf("[FightAttack] Edge escape complete. Resuming patrol...\r\n");
+          }
+          break;
+        }
         
         default:
           break;
@@ -1604,13 +1642,102 @@ void StartMotion_Task(void *argument)
         /* ========== 自动控制模式 ========== */
         else 
         {
-            // 原物理光电开关版边缘巡台与检测（备份留底）
-            // Auto_Control_Logic(sw1, sw3, Grey_Front,Grey_Left,Grey_Right,Grey_Back);     //自动巡台
-            // Detect(&global_vision_target, &global_vision_yaw,&IR_Distance_F, &IR_Sensor_L, &IR_Sensor_R,&Grey_Front);  //自动检测能量块并推下
+            /* 获取 IR 距离，依据自主识别敌人步骤计算转角 */
+            float dist[8];
+            dist[0] = ir_distance[0]; // 前方
+            dist[1] = ir_distance[1]; // 左前
+            dist[2] = ir_distance[8]; // 左侧 (交换后)
+            dist[3] = ir_distance[3]; // 左后
+            dist[4] = ir_distance[5]; // 后方
+            dist[5] = ir_distance[4]; // 右后
+            dist[6] = ir_distance[6]; // 右侧 (交换后)
+            dist[7] = ir_distance[2]; // 右前
+            
+            /* 判断各方向是否触发，前方<20，其余<50 */
+            int trig[8];
+            for(int i = 0; i < 8; i++) {
+                if (i == 0) trig[i] = (dist[i] < 20.0f) ? 1 : 0;
+                else trig[i] = (dist[i] < 50.0f) ? 1 : 0;
+            }
+            
+            int match_3 = -1;
+            for(int i = 0; i < 8; i++) {
+                int prev = (i + 7) % 8;
+                int next = (i + 1) % 8;
+                if (trig[prev] && trig[i] && trig[next]) {
+                    match_3 = i;
+                    break;
+                }
+            }
+            
+            int match_2_1 = -1, match_2_2 = -1;
+            if (match_3 == -1) {
+                for(int i = 0; i < 8; i++) {
+                    int next = (i + 1) % 8;
+                    if (trig[i] && trig[next]) {
+                        match_2_1 = i;
+                        match_2_2 = next;
+                        break;
+                    }
+                }
+            }
+            
+            int match_1 = -1;
+            if (match_3 == -1 && match_2_1 == -1) {
+                for(int i = 0; i < 8; i++) {
+                    if (trig[i]) {
+                        match_1 = i;
+                        break;
+                    }
+                }
+            }
+            
+            float t_angle = 0.0f;
+            int found = 0;
+            
+            if (match_3 != -1) {
+                t_angle = match_3 * 45.0f;
+                found = 1;
+            } else if (match_2_1 != -1) {
+                if (match_2_1 == 7 && match_2_2 == 0) {
+                    t_angle = -22.5f; /* 337.5 相当于 -22.5 */
+                } else {
+                    t_angle = (match_2_1 + match_2_2) * 45.0f / 2.0f;
+                }
+                found = 1;
+            } else if (match_1 != -1) {
+                t_angle = match_1 * 45.0f;
+                found = 1;
+            }
 
-            // 新激光测距版边缘巡台与检测（当激光检测距离大于260时判定为边缘）
-            Auto_Control_Logic_Laser(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);     //自动巡台
-            Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2, &Grey_Front);  //自动检测能量块并推下
+            if (found) {
+                /* 角度标准化到 -180 ~ 180 */
+                while (t_angle > 180.0f) t_angle -= 360.0f;
+                while (t_angle < -180.0f) t_angle += 360.0f;
+                
+                if (fabs(t_angle) < 5.0f) { // 直行
+                    robot_state = ROBOT_FIGHT_ATTACK_MOVE;
+                    climb_wall_align_start_tick = HAL_GetTick();
+                    printf("[FightAttack] Enemy straight ahead. Launching charge attack immediately...\r\n");
+                } else {
+                    climb_target_angle = IMU_Data.Yaw + t_angle;
+                    while (climb_target_angle > 180.0f)  climb_target_angle -= 360.0f;
+                    while (climb_target_angle < -180.0f) climb_target_angle += 360.0f;
+                    
+                    climb_next_state = ROBOT_FIGHT_ATTACK_MOVE;
+                    robot_state = ROBOT_CLIMB_ROTATE_TO_DIR;
+                    init_rotate_pd = 0;
+                    printf("[FightAttack] Steering to enemy at relative %.1f (target absolute %.1f)...\r\n", t_angle, climb_target_angle);
+                }
+            } else {
+                // 原物理光电开关版边缘巡台与检测（备份留底）
+                // Auto_Control_Logic(sw1, sw3, Grey_Front,Grey_Left,Grey_Right,Grey_Back);     //自动巡台
+                // Detect(&global_vision_target, &global_vision_yaw,&IR_Distance_F, &IR_Sensor_L, &IR_Sensor_R,&Grey_Front);  //自动检测能量块并推下
+
+                // 新激光测距版边缘巡台与检测（当激光检测距离大于260时判定为边缘）
+                Auto_Control_Logic_Laser(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);     //自动巡台
+                Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2, &Grey_Front);  //自动检测能量块并推下
+            }
         }
         
 

@@ -220,28 +220,27 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
                 dev1_initialized = 1;
                 dev1_fail_count = 0;
                 vl53l0x_start_continuous_measurements(&vl53l0x_dev1);
+                printf("Laser 1 re-initialized successfully\r\n");
             } else {
                 return 0xFFFF;
             }
         }
         // 瞬间读取连续测量结果寄存器（不含任何等待和阻塞，耗时 < 1ms）
-        if (vl53l0x_get_range_mm_continuous(&vl53l0x_dev1, &range) != VL53L0X_OK) {
+        vl53l0x_get_range_mm_continuous(&vl53l0x_dev1, &range);
+
+        // 自愈判定：如果读到 0、8191 或 0xFFFF，说明测量失效或总线异常
+        if (range == 0 || range == 8191 || range == 0xFFFF) {
             dev1_fail_count++;
             if (dev1_fail_count >= MAX_CONSECUTIVE_FAILS) {
+                // 连续多次失效，执行总线恢复并标记为未初始化以触发重新初始化
+                SoftI2C_Recover(SOFT_I2C_BUS_1);
                 dev1_initialized = 0;
+                printf("Laser 1 consecutive failures (%d). Lockup detected (range: %d). Triggering recovery...\r\n", dev1_fail_count, range);
+                dev1_fail_count = 0;
             }
-            return 0xFFFF;
+            return 0xFFFF; // 失效时返回最大值，触发边缘防跌落保护，确保安全
         } else {
             dev1_fail_count = 0;
-        }
-
-        // 软件自愈检测：如果读到 8191，检查控制寄存器 0x00 确认传感器是否意外复位
-        if (range == 8191) {
-            uint8_t mode = read_reg_bus1(0x00);
-            if (mode != 0x02) { // 正常连续测量模式下 0x00 (SYSRANGE_START) 应为 0x02
-                dev1_initialized = 0;
-                printf("Laser 1 hardware reset detected (mode: 0x%02X). Re-initializing...\r\n", mode);
-            }
         }
     } else {
         if (!dev2_initialized) {
@@ -253,28 +252,27 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
                 dev2_initialized = 1;
                 dev2_fail_count = 0;
                 vl53l0x_start_continuous_measurements(&vl53l0x_dev2);
+                printf("Laser 2 re-initialized successfully\r\n");
             } else {
                 return 0xFFFF;
             }
         }
         // 瞬间读取连续测量结果寄存器（不含任何等待和阻塞，耗时 < 1ms）
-        if (vl53l0x_get_range_mm_continuous(&vl53l0x_dev2, &range) != VL53L0X_OK) {
+        vl53l0x_get_range_mm_continuous(&vl53l0x_dev2, &range);
+
+        // 自愈判定：如果读到 0、8191 或 0xFFFF，说明测量失效或总线异常
+        if (range == 0 || range == 8191 || range == 0xFFFF) {
             dev2_fail_count++;
             if (dev2_fail_count >= MAX_CONSECUTIVE_FAILS) {
+                // 连续多次失效，执行总线恢复并标记为未初始化以触发重新初始化
+                SoftI2C_Recover(SOFT_I2C_BUS_2);
                 dev2_initialized = 0;
+                printf("Laser 2 consecutive failures (%d). Lockup detected (range: %d). Triggering recovery...\r\n", dev2_fail_count, range);
+                dev2_fail_count = 0;
             }
-            return 0xFFFF;
+            return 0xFFFF; // 失效时返回最大值，触发边缘防跌落保护，确保安全
         } else {
             dev2_fail_count = 0;
-        }
-
-        // 软件自愈检测：如果读到 8191，检查控制寄存器 0x00 确认传感器是否意外复位
-        if (range == 8191) {
-            uint8_t mode = read_reg_bus2(0x00);
-            if (mode != 0x02) { // 正常连续测量模式下 0x00 (SYSRANGE_START) 应为 0x02
-                dev2_initialized = 0;
-                printf("Laser 2 hardware reset detected (mode: 0x%02X). Re-initializing...\r\n", mode);
-            }
         }
     }
     return range;
