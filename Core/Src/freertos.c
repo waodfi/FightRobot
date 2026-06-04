@@ -1487,8 +1487,105 @@ void StartMotion_Task(void *argument)
 
         case ROBOT_FIGHT_ATTACK_MOVE:
         {
-          /* 实战冲击追击状态：全速向前冲击敌人 */
-          Motor_Control(0, 40);
+          /* 实战冲击追击状态：以正常巡台速度向敌人方向行驶，并在前进中实时微调转向 */
+          
+          /* 获取 IR 距离，依据自主识别敌人步骤计算转角 */
+          float dist[8];
+          dist[0] = ir_distance[0]; // 前方
+          dist[1] = ir_distance[1]; // 左前
+          dist[2] = ir_distance[8]; // 左侧 (交换后)
+          dist[3] = ir_distance[3]; // 左后
+          dist[4] = ir_distance[5]; // 后方
+          dist[5] = ir_distance[4]; // 右后
+          dist[6] = ir_distance[6]; // 右侧 (交换后)
+          dist[7] = ir_distance[2]; // 右前
+          
+          /* 判断各方向是否触发，前方 < 20.0f，其余 < 50.0f */
+          int trig[8];
+          for(int i = 0; i < 8; i++) {
+              if (i == 0) trig[i] = (dist[i] < 20.0f) ? 1 : 0;
+              else trig[i] = (dist[i] < 50.0f) ? 1 : 0;
+          }
+          
+          int match_3 = -1;
+          for(int i = 0; i < 8; i++) {
+              int prev = (i + 7) % 8;
+              int next = (i + 1) % 8;
+              if (trig[prev] && trig[i] && trig[next]) {
+                  match_3 = i;
+                  break;
+              }
+          }
+          
+          int match_2_1 = -1, match_2_2 = -1;
+          if (match_3 == -1) {
+              for(int i = 0; i < 8; i++) {
+                  int next = (i + 1) % 8;
+                  if (trig[i] && trig[next]) {
+                      match_2_1 = i;
+                      match_2_2 = next;
+                      break;
+                  }
+              }
+          }
+          
+          int match_1 = -1;
+          if (match_3 == -1 && match_2_1 == -1) {
+              for(int i = 0; i < 8; i++) {
+                  if (trig[i]) {
+                      match_1 = i;
+                      break;
+                  }
+              }
+          }
+          
+          float t_angle = 0.0f;
+          int found = 0;
+          
+          if (match_3 != -1) {
+              t_angle = match_3 * 45.0f;
+              found = 1;
+          } else if (match_2_1 != -1) {
+              if (match_2_1 == 7 && match_2_2 == 0) {
+                  t_angle = -22.5f;
+              } else {
+                  t_angle = (match_2_1 + match_2_2) * 45.0f / 2.0f;
+              }
+              found = 1;
+          } else if (match_1 != -1) {
+              t_angle = match_1 * 45.0f;
+              found = 1;
+          }
+          
+          float turn_speed = 0.0f;
+          if (found) {
+              /* 角度标准化到 -180 ~ 180 */
+              while (t_angle > 180.0f) t_angle -= 360.0f;
+              while (t_angle < -180.0f) t_angle += 360.0f;
+              
+              if (fabs(t_angle) > 60.0f) {
+                  /* 敌人偏移角度过大（偏到侧方或后方），停止向前，重新原地自转对齐 */
+                  climb_target_angle = IMU_Data.Yaw + t_angle;
+                  while (climb_target_angle > 180.0f)  climb_target_angle -= 360.0f;
+                  while (climb_target_angle < -180.0f) climb_target_angle += 360.0f;
+                  
+                  climb_next_state = ROBOT_FIGHT_ATTACK_MOVE;
+                  robot_state = ROBOT_CLIMB_ROTATE_TO_DIR;
+                  init_rotate_pd = 0;
+                  Motor_Control(0, 0);
+                  printf("[FightAttack] Enemy moved to side/behind (%.1f). Re-aligning...\r\n", t_angle);
+                  break; // 跳出当前 state 逻辑
+              } else {
+                  /* 敌人在前方扇区内，计算转向速度（正值左转，负值右转） */
+                  float Kp_track = 0.3f;
+                  turn_speed = -t_angle * Kp_track;
+                  if (turn_speed > 15.0f)  turn_speed = 15.0f;
+                  if (turn_speed < -15.0f) turn_speed = -15.0f;
+              }
+          }
+          
+          /* 融合前行速度（正常巡台速度 18）与转向速度 */
+          Motor_Control((int16_t)turn_speed, 18);
           
           /* 实时检测边缘：一旦有一侧激光检测到边缘值（> 260），立即制动、退后、转身，重回巡台 */
           if (laser_dist_1 > 260 || laser_dist_2 > 260)
