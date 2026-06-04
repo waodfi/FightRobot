@@ -234,6 +234,15 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
         } else {
             dev1_fail_count = 0;
         }
+
+        // 软件自愈检测：如果读到 8191，检查控制寄存器 0x00 确认传感器是否意外复位
+        if (range == 8191) {
+            uint8_t mode = read_reg_bus1(0x00);
+            if (mode != 0x02) { // 正常连续测量模式下 0x00 (SYSRANGE_START) 应为 0x02
+                dev1_initialized = 0;
+                printf("Laser 1 hardware reset detected (mode: 0x%02X). Re-initializing...\r\n", mode);
+            }
+        }
     } else {
         if (!dev2_initialized) {
             if (current_tick - last_init_tick2 < INIT_RETRY_DELAY_MS) {
@@ -257,6 +266,15 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
             return 0xFFFF;
         } else {
             dev2_fail_count = 0;
+        }
+
+        // 软件自愈检测：如果读到 8191，检查控制寄存器 0x00 确认传感器是否意外复位
+        if (range == 8191) {
+            uint8_t mode = read_reg_bus2(0x00);
+            if (mode != 0x02) { // 正常连续测量模式下 0x00 (SYSRANGE_START) 应为 0x02
+                dev2_initialized = 0;
+                printf("Laser 2 hardware reset detected (mode: 0x%02X). Re-initializing...\r\n", mode);
+            }
         }
     }
     return range;

@@ -110,10 +110,10 @@ void Detect(volatile uint8_t *target, volatile float *yaw,volatile float *distan
 
 void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front, float grey_left, float grey_right, float grey_back)
 {
-    // 当激光传感器开始测得大于 275mm 时，说明小车已接近边缘，主动降速至 7；否则保持正常速度 18 巡台
-    if (laser1 > 275 || laser2 > 275)
+    // 当激光传感器开始测得大于 260mm 时，说明小车已接近边缘，主动降速至 3；否则保持正常速度 18 巡台
+    if (laser1 > 260 || laser2 > 260)
     {
-        Motor_Control(0, 7); 
+        Motor_Control(0, 3); 
     }
     else
     {
@@ -121,7 +121,7 @@ void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front
     }
 
     // 去掉所有灰度传感器判断条件，仅根据激光测距判断边缘
-    if(laser1 > 290 && laser2 <= 290)         
+    if(laser1 > 275 && laser2 <= 275)         
     {
         // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
         Motor_Control(0, -60);
@@ -134,7 +134,7 @@ void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front
         Motor_Control(0, 0);
         osDelay(125);
     }
-    else if(laser1 <= 290 && laser2 > 290)
+    else if(laser1 <= 275 && laser2 > 275)
     {
         // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
         Motor_Control(0, -60);
@@ -147,7 +147,7 @@ void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front
         Motor_Control(0, 0);
         osDelay(125);
     }
-    else if(laser1 > 290 && laser2 > 290)
+    else if(laser1 > 275 && laser2 > 275)
     {
         // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
         Motor_Control(0, -60);
@@ -164,7 +164,7 @@ void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front
 
 // 自动推能量块函数（激光测距版）
 // laser1 对应原本的 SW_L，laser2 对应原本 of SW_R
-// 当激光测量距离大于 290 mm 时说明能量块已被推下（下方悬空）
+// 当激光测量距离大于 275 mm 时说明能量块已被推下（下方悬空）
 void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float *distance_front, volatile uint16_t *laser1, volatile uint16_t *laser2, volatile float *grey_front)
 {
     if(*target == 2 || *target == 0) //如果视觉识别到的目标是tag_type=2或tag_type=0，则根据偏航角进行转向修正
@@ -192,8 +192,8 @@ void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float 
             Motor_Control(0, 18); // 向前推
             uint32_t push_start_time = HAL_GetTick(); // 记录推块开始时间
             
-            // 去掉灰度判断，只靠激光大于 290 触发
-            while(!(*laser1 > 290 || *laser2 > 290)) 
+            // 去掉灰度判断，只靠激光大于 275 触发
+            while(!(*laser1 > 275 || *laser2 > 275)) 
             {
                 osDelay(50);
                 // 添加一个10秒超时机制，防止死循环
