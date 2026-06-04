@@ -577,8 +577,8 @@ void StartSensor_Task(void *argument)
     /* 向队列发送触发标志给 Comm_Task */
     osMessageQueuePut(IMU_Rx_QueueHandle, &trigger_msg, 0, 0);
     
-    /* 延迟20ms */
-    osDelay(20);
+    /* 延迟10ms */
+    osDelay(10);
   }
   /* USER CODE END StartSensor_Task */
 }
@@ -1608,7 +1608,7 @@ void StartMotion_Task(void *argument)
             // Auto_Control_Logic(sw1, sw3, Grey_Front,Grey_Left,Grey_Right,Grey_Back);     //自动巡台
             // Detect(&global_vision_target, &global_vision_yaw,&IR_Distance_F, &IR_Sensor_L, &IR_Sensor_R,&Grey_Front);  //自动检测能量块并推下
 
-            // 新激光测距版边缘巡台与检测（当激光检测距离大于300时判定为边缘）
+            // 新激光测距版边缘巡台与检测（当激光检测距离大于290时判定为边缘）
             Auto_Control_Logic_Laser(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);     //自动巡台
             Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2, &Grey_Front);  //自动检测能量块并推下
         }

@@ -110,44 +110,53 @@ void Detect(volatile uint8_t *target, volatile float *yaw,volatile float *distan
 
 void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front, float grey_left, float grey_right, float grey_back)
 {
-    // 降低整体巡台移动速度：由 25 降至 18
-    Motor_Control(0, 18); 
+    // 当激光传感器开始测得大于 275mm 时，说明小车已接近边缘，主动降速至 7；否则保持正常速度 18 巡台
+    if (laser1 > 275 || laser2 > 275)
+    {
+        Motor_Control(0, 7); 
+    }
+    else
+    {
+        Motor_Control(0, 18); 
+    }
 
-    // 只把红外光电触发位置替换为激光测距大于 300，其他条件与逻辑方向一律不变
-    if(laser1 > 300 && laser2 <= 300 && (grey_front > 145 || grey_right > 145))         
+    // 去掉所有灰度传感器判断条件，仅根据激光测距判断边缘
+    if(laser1 > 290 && laser2 <= 290)         
     {
         // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
         Motor_Control(0, -60);
         osDelay(80);
         Motor_Control(0, -22);                  
         osDelay(220);
-        // 降低转弯速度（-60 -> -35），转向时间 650ms 保持不变
+        // 降低转弯速度（-60 -> -35），转向时间由 650ms 缩短至 450ms
         Motor_Control(-35, 0);                  
-        osDelay(650);
+        osDelay(450);
         Motor_Control(0, 0);
         osDelay(125);
     }
-    else if(laser1 <= 300 && laser2 > 300 && (grey_front > 145 || grey_left > 145))
+    else if(laser1 <= 290 && laser2 > 290)
     {
         // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
         Motor_Control(0, -60);
         osDelay(80);
         Motor_Control(0, -22);
         osDelay(220);
+        // 转向时间由 650ms 缩短至 450ms
         Motor_Control(35, 0);                   
-        osDelay(650);
+        osDelay(450);
         Motor_Control(0, 0);
         osDelay(125);
     }
-    else if(laser1 > 300 && laser2 > 300 && grey_front > 145)
+    else if(laser1 > 290 && laser2 > 290)
     {
         // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
         Motor_Control(0, -60);
         osDelay(80);
         Motor_Control(0, -22);
         osDelay(220);
+        // 转向时间由 650ms 缩短至 450ms
         Motor_Control(-35, 0);                  
-        osDelay(650);
+        osDelay(450);
         Motor_Control(0, 0);
         osDelay(125);
     }
@@ -155,7 +164,7 @@ void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front
 
 // 自动推能量块函数（激光测距版）
 // laser1 对应原本的 SW_L，laser2 对应原本 of SW_R
-// 当激光测量距离大于 300 mm 时说明能量块已被推下（下方悬空）
+// 当激光测量距离大于 290 mm 时说明能量块已被推下（下方悬空）
 void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float *distance_front, volatile uint16_t *laser1, volatile uint16_t *laser2, volatile float *grey_front)
 {
     if(*target == 2 || *target == 0) //如果视觉识别到的目标是tag_type=2或tag_type=0，则根据偏航角进行转向修正
@@ -183,9 +192,8 @@ void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float 
             Motor_Control(0, 18); // 向前推
             uint32_t push_start_time = HAL_GetTick(); // 记录推块开始时间
             
-            // 仅将光电触发（SW_L == 1 || SW_R == 1）改为激光测距（*laser1 > 300 || *laser2 > 300）
-            // 其他逻辑（包括 && *grey_front > 165）完全保持不变
-            while(!((*laser1 > 300 || *laser2 > 300) && *grey_front > 165)) 
+            // 去掉灰度判断，只靠激光大于 290 触发
+            while(!(*laser1 > 290 || *laser2 > 290)) 
             {
                 osDelay(50);
                 // 添加一个10秒超时机制，防止死循环

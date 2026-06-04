@@ -166,7 +166,8 @@ void TOF050C_Init(SoftI2C_Bus_e bus)
         last_init_tick1 = HAL_GetTick();
         if (vl53l0x_init(&vl53l0x_dev1) == VL53L0X_OK) {
             dev1_initialized = 1;
-            printf("Bus 1 (Laser 1) Init OK\r\n");
+            vl53l0x_start_continuous_measurements(&vl53l0x_dev1); // 开启硬件连续测量模式
+            printf("Bus 1 (Laser 1) Init OK and continuous started\r\n");
         } else {
             dev1_initialized = 0;
             printf("Bus 1 (Laser 1) Init FAIL\r\n");
@@ -184,6 +185,7 @@ void TOF050C_Init(SoftI2C_Bus_e bus)
         vl53l0x_ll2.i2c_read_reg = read_reg_bus2;
         vl53l0x_ll2.i2c_read_reg_16bit = read_reg_16_bus2;
         vl53l0x_ll2.i2c_read_reg_32bit = read_reg_32_bus2;
+        vl53l0x_dev2.ll = &vl53l0x_ll2;
         vl53l0x_ll2.i2c_read_reg_multi = read_reg_multi_bus2;
         vl53l0x_ll2.xshut_set = NULL;
         vl53l0x_ll2.xshut_reset = NULL;
@@ -194,7 +196,8 @@ void TOF050C_Init(SoftI2C_Bus_e bus)
         last_init_tick2 = HAL_GetTick();
         if (vl53l0x_init(&vl53l0x_dev2) == VL53L0X_OK) {
             dev2_initialized = 1;
-            printf("Bus 2 (Laser 2) Init OK\r\n");
+            vl53l0x_start_continuous_measurements(&vl53l0x_dev2); // 开启硬件连续测量模式
+            printf("Bus 2 (Laser 2) Init OK and continuous started\r\n");
         } else {
             dev2_initialized = 0;
             printf("Bus 2 (Laser 2) Init FAIL\r\n");
@@ -216,11 +219,13 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
             if (vl53l0x_init(&vl53l0x_dev1) == VL53L0X_OK) {
                 dev1_initialized = 1;
                 dev1_fail_count = 0;
+                vl53l0x_start_continuous_measurements(&vl53l0x_dev1);
             } else {
                 return 0xFFFF;
             }
         }
-        if (vl53l0x_read_in_oneshot_mode(&vl53l0x_dev1, &range) != VL53L0X_OK) {
+        // 瞬间读取连续测量结果寄存器（不含任何等待和阻塞，耗时 < 1ms）
+        if (vl53l0x_get_range_mm_continuous(&vl53l0x_dev1, &range) != VL53L0X_OK) {
             dev1_fail_count++;
             if (dev1_fail_count >= MAX_CONSECUTIVE_FAILS) {
                 dev1_initialized = 0;
@@ -238,11 +243,13 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
             if (vl53l0x_init(&vl53l0x_dev2) == VL53L0X_OK) {
                 dev2_initialized = 1;
                 dev2_fail_count = 0;
+                vl53l0x_start_continuous_measurements(&vl53l0x_dev2);
             } else {
                 return 0xFFFF;
             }
         }
-        if (vl53l0x_read_in_oneshot_mode(&vl53l0x_dev2, &range) != VL53L0X_OK) {
+        // 瞬间读取连续测量结果寄存器（不含任何等待和阻塞，耗时 < 1ms）
+        if (vl53l0x_get_range_mm_continuous(&vl53l0x_dev2, &range) != VL53L0X_OK) {
             dev2_fail_count++;
             if (dev2_fail_count >= MAX_CONSECUTIVE_FAILS) {
                 dev2_initialized = 0;
