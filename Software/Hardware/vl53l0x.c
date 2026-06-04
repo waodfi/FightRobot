@@ -705,7 +705,7 @@ vl53l0x_ret_t vl53l0x_do_measurement(vl53l0x_dev_t *dev, vl53l0x_measure_mode_t 
                 break;
             }
             dev->ll->delay_ms(2);
-            if (timeout_cycles >= 500) { // 1000ms max timeout
+            if (timeout_cycles >= 25) { // 50ms max timeout
                 return VL53L0X_FAIL;
             }
             ++timeout_cycles;
@@ -719,7 +719,7 @@ vl53l0x_ret_t vl53l0x_do_measurement(vl53l0x_dev_t *dev, vl53l0x_measure_mode_t 
                     break;
                 }
                 dev->ll->delay_ms(2);
-                if (timeout_cycles >= 500) {
+                if (timeout_cycles >= 25) { // 50ms max timeout
                     return VL53L0X_FAIL;
                 }
                 ++timeout_cycles;
@@ -734,7 +734,7 @@ vl53l0x_ret_t vl53l0x_do_measurement(vl53l0x_dev_t *dev, vl53l0x_measure_mode_t 
                     break;
                 }
                 dev->ll->delay_ms(2);
-                if (timeout_cycles >= 500) {
+                if (timeout_cycles >= 25) { // 50ms max timeout
                     return VL53L0X_FAIL;
                 }
                 ++timeout_cycles;

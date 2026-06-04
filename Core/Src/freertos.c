@@ -577,8 +577,8 @@ void StartSensor_Task(void *argument)
     /* 向队列发送触发标志给 Comm_Task */
     osMessageQueuePut(IMU_Rx_QueueHandle, &trigger_msg, 0, 0);
     
-    /* 延迟100ms */
-    osDelay(100);
+    /* 延迟20ms */
+    osDelay(20);
   }
   /* USER CODE END StartSensor_Task */
 }
@@ -1493,7 +1493,7 @@ void StartMotion_Task(void *argument)
       continue;
     }
 
-    if (!Control_IsOnline()) {
+    if (!Control_IsOnline() && !is_test_mode) {
         motor_target_speed[0] = 0.0f;
         motor_target_speed[1] = 0.0f;
         motor_target_speed[2] = 0.0f;
@@ -1604,10 +1604,13 @@ void StartMotion_Task(void *argument)
         /* ========== 自动控制模式 ========== */
         else 
         {
+            // 原物理光电开关版边缘巡台与检测（备份留底）
+            // Auto_Control_Logic(sw1, sw3, Grey_Front,Grey_Left,Grey_Right,Grey_Back);     //自动巡台
+            // Detect(&global_vision_target, &global_vision_yaw,&IR_Distance_F, &IR_Sensor_L, &IR_Sensor_R,&Grey_Front);  //自动检测能量块并推下
 
-            Auto_Control_Logic(sw1, sw3, Grey_Front,Grey_Left,Grey_Right,Grey_Back);     //自动巡台
-            Detect(&global_vision_target, &global_vision_yaw,&IR_Distance_F, &IR_Sensor_L, &IR_Sensor_R,&Grey_Front);  //自动检测能量块并推下
-            
+            // 新激光测距版边缘巡台与检测（当激光检测距离大于300时判定为边缘）
+            Auto_Control_Logic_Laser(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);     //自动巡台
+            Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2, &Grey_Front);  //自动检测能量块并推下
         }
         
 
@@ -1686,9 +1689,11 @@ void StartAngle_Task(void *argument)
 /* USER CODE BEGIN Application */
 void Trigger_Debug_Launch(void)
 {
-  /* 仅在此处切换状态，避免在串口接收中断 (ISR) 中进行任何阻塞延时操作 */
-  is_test_mode = 1; /* 标记为测试模式 */
-  robot_state = ROBOT_TEST_ATTACK_PREPARE;
+  /* 串口输入 Y / y 启动自动巡台测试模式 */
+  is_test_mode = 1;             /* 标记为测试模式以绕过遥控离线检查 */
+  control_mode = 1;             /* 强制切换到自动控制模式 */
+  robot_state = ROBOT_RUNNING;  /* 设为常规运行状态，以便进入自动巡台逻辑 */
+  printf("[SerialTrigger] Y received! Starting Auto Patrol Laser Test...\r\n");
 }
 /* USER CODE END Application */
 

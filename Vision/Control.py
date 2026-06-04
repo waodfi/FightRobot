@@ -58,7 +58,7 @@ sensor_data = {
     '姿态': '等待数据...',
     '距离': '等待数据...',
     '灰度': '等待数据...',
-    '光电': '等待数据...',
+    '激光': '等待数据...',
     '转速': '等待数据...',
     '视觉': '等待数据...'
 }
@@ -119,7 +119,7 @@ def serial_receive_thread(ser):
                         except: pass
                     elif 'IR Dist' in line: sensor_data['距离'] = line
                     elif 'Grey' in line: sensor_data['灰度'] = line
-                    elif 'Photoelectric' in line or 'Photo' in line: sensor_data['光电'] = line
+                    elif 'Laser' in line: sensor_data['激光'] = line
                     elif 'RPM' in line or 'Motor' in line: sensor_data['转速'] = line
                     elif 'Angle Control:' in line:
                         if 'Enabled' in line: angle_enabled_display = 1
@@ -477,7 +477,7 @@ def main():
             '姿态': (100, 200, 255),      # 蓝色
             '距离': (150, 255, 100),      # 绿色
             '灰度': (255, 200, 100),      # 橙色
-            '光电': (255, 150, 150),      # 红色
+            '激光': (255, 150, 150),      # 红色
             '转速': (200, 150, 255),      # 紫色
             '视觉': (100, 255, 220)       # 青绿色
         }

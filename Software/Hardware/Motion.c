@@ -2,6 +2,8 @@
 #include "control.h"
 #include "cmsis_os.h"
 #include "Motor.h"
+#include "IMU.h"
+#include <math.h>
 
 
 //自动巡台函数，传入左右两个光电开关和前方灰度传感器的数值，根据不同的情况执行不同的转向逻辑
@@ -104,4 +106,120 @@ void Detect(volatile uint8_t *target, volatile float *yaw,volatile float *distan
     }
 
 
+}
+
+void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front, float grey_left, float grey_right, float grey_back)
+{
+    // 降低整体巡台移动速度：由 25 降至 18
+    Motor_Control(0, 18); 
+
+    // 只把红外光电触发位置替换为激光测距大于 300，其他条件与逻辑方向一律不变
+    if(laser1 > 300 && laser2 <= 300 && (grey_front > 145 || grey_right > 145))         
+    {
+        // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
+        Motor_Control(0, -60);
+        osDelay(80);
+        Motor_Control(0, -22);                  
+        osDelay(220);
+        // 降低转弯速度（-60 -> -35），转向时间 650ms 保持不变
+        Motor_Control(-35, 0);                  
+        osDelay(650);
+        Motor_Control(0, 0);
+        osDelay(125);
+    }
+    else if(laser1 <= 300 && laser2 > 300 && (grey_front > 145 || grey_left > 145))
+    {
+        // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
+        Motor_Control(0, -60);
+        osDelay(80);
+        Motor_Control(0, -22);
+        osDelay(220);
+        Motor_Control(35, 0);                   
+        osDelay(650);
+        Motor_Control(0, 0);
+        osDelay(125);
+    }
+    else if(laser1 > 300 && laser2 > 300 && grey_front > 145)
+    {
+        // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
+        Motor_Control(0, -60);
+        osDelay(80);
+        Motor_Control(0, -22);
+        osDelay(220);
+        Motor_Control(-35, 0);                  
+        osDelay(650);
+        Motor_Control(0, 0);
+        osDelay(125);
+    }
+}
+
+// 自动推能量块函数（激光测距版）
+// laser1 对应原本的 SW_L，laser2 对应原本 of SW_R
+// 当激光测量距离大于 300 mm 时说明能量块已被推下（下方悬空）
+void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float *distance_front, volatile uint16_t *laser1, volatile uint16_t *laser2, volatile float *grey_front)
+{
+    if(*target == 2 || *target == 0) //如果视觉识别到的目标是tag_type=2或tag_type=0，则根据偏航角进行转向修正
+    {
+        // 调整姿态，使小车对准能量块（降低修正转向速度：由 50 降至 35）
+        if(*yaw > 7)
+        {
+            // 往左转进行修正，非阻塞（交由大循环判断）
+            Motor_Control(35, 0);
+            osDelay(150); // 适当延时让转向生效
+            Motor_Control(0, 0); // 立即停止转向，保持当前位置
+            osDelay(150); // 适当延时让转向生效
+        }
+        else if( *yaw < -7)
+        {
+            // 往右转进行修正，非阻塞
+            Motor_Control(-35, 0); 
+            osDelay(150); // 适当延时让转向生效
+            Motor_Control(0, 0); // 立即停止转向，保持当前位置
+            osDelay(150); // 适当延时让转向生效
+        }
+        else if(*yaw >= -7 && *yaw <= 7) // 如果已经对准了
+        {  
+            // 已经对准，执行推块动作（降低速度：由 25 降至 18）
+            Motor_Control(0, 18); // 向前推
+            uint32_t push_start_time = HAL_GetTick(); // 记录推块开始时间
+            
+            // 仅将光电触发（SW_L == 1 || SW_R == 1）改为激光测距（*laser1 > 300 || *laser2 > 300）
+            // 其他逻辑（包括 && *grey_front > 165）完全保持不变
+            while(!((*laser1 > 300 || *laser2 > 300) && *grey_front > 165)) 
+            {
+                osDelay(50);
+                // 添加一个10秒超时机制，防止死循环
+                if(HAL_GetTick() - push_start_time >= 10000) 
+                {
+                    break;
+                }
+            }
+            // 降低推完后的停止/后退速度（由 -40 降至 -25）
+            Motor_Control(0, -25); // 推完后立即停止
+            osDelay(130); // 推完后稍微延时一下
+            Motor_Control(0, 0); // 确保完全停止
+            osDelay(250); // 适当延时让动作生效
+        }
+    }
+
+    if(*target == 1) // 如果视觉识别到的目标是tag_type=1（自己的能量块需避让）
+    {
+        // 调整姿态，使小车对准能量块（降低转向速度：由 50 降至 35）
+        if(*yaw >= 0 && *yaw <= 20)
+        {
+            // 往左转进行修正，非阻塞（交由大循环判断）
+            Motor_Control(-35, 0);
+            osDelay(150); // 适当延时让转向生效
+            Motor_Control(0, 0); // 立即停止转向，保持当前位置
+            osDelay(150); // 适当延时让转向生效
+        }
+        else if(*yaw < 0 && *yaw >= -20)
+        {
+            // 往右转进行修正，非阻塞
+            Motor_Control(35, 0); 
+            osDelay(150); // 适当延时让转向生效
+            Motor_Control(0, 0); // 立即停止转向，保持当前位置
+            osDelay(150); // 适当延时让转向生效
+        }
+    }
 }
