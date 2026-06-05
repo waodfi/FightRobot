@@ -115,7 +115,7 @@ float motor_angle_speed[4] = {0.0f};  // 角度环转向修正指令
 
 #define CLIMB_ONSTAGE_DURATION_MS  2000    /* 台上冲坡持续时间(2秒) */
 #define CLIMB_BLIND_DURATION_MS    1000    /* 登台盲冲刺阶段时间为1.0秒(1000ms)，期间忽略灰度传感器 */
-#define CLIMB_OFFSTAGE_TIMEOUT_MS  1500    /* 登台后退最大安全保护时间为 1.5 秒 (1500ms) */
+#define CLIMB_OFFSTAGE_TIMEOUT_MS  1000    /* 登台后退时间为 1 秒 (1000ms)，到时立即刹车 */
 
 /* 自主登台与软启动状态枚举 */
 typedef enum {
@@ -1227,30 +1227,22 @@ void StartMotion_Task(void *argument)
           
           uint32_t elapsed = HAL_GetTick() - climb_start_tick;
           
-          /* 登台成功判定：
-             如果是串口 'Y' 测试模式：运行时间到达 1.0 秒 (1000ms) 时立即刹车停止，进入 ROBOT_FINISHED。
-             如果是官方正式登台：
-               1. 首个 1.0 秒 (CLIMB_BLIND_DURATION_MS) 为盲爬行阶段，完全忽略灰度传感器，全速后退；
-               2. 1.0 秒后，启动主动成功判定：当 Grey_Front < ONSTAGE_GREY_SUCCESS_THRESHOLD 时说明已完全登台；
-               3. 3.5 秒 (CLIMB_OFFSTAGE_TIMEOUT_MS) 超时保护。 */
-          if (is_test_mode)
+          /* 登台判定：后退冲台固定 1 秒 (CLIMB_OFFSTAGE_TIMEOUT_MS=1000ms)，到时立即刹车
+             - 测试模式：刹车后进入 ROBOT_FINISHED 静止
+             - 正式模式：刹车后进入 ROBOT_RUNNING 开始台上战斗 */
+          if (elapsed >= CLIMB_OFFSTAGE_TIMEOUT_MS)
           {
-            if (elapsed >= 1000U)
+            Motor_Control(0, 0);
+            if (is_test_mode)
             {
-              Motor_Control(0, 0);
               robot_state = ROBOT_FINISHED;
-              printf("[TestClimb] Test climbing complete! Elapsed: %lums. State -> ROBOT_FINISHED. Staying static.\r\n", elapsed);
+              printf("[TestClimb] Climb complete! Reversed for %lums. State -> ROBOT_FINISHED.\r\n", elapsed);
             }
-          }
-          else
-          {
-            /* 超时保护 */
-            if (elapsed >= CLIMB_OFFSTAGE_TIMEOUT_MS)
+            else
             {
-              Motor_Control(0, 0);
-              is_test_mode = 0;
-              robot_state = ROBOT_TEST_ROTATE_PREPARE; // 登台失败，退回270°扫描重新登台
-              printf("[AutoClimb] Timeout (%dms) without onstage detection. Climb failed! Transition to ROBOT_TEST_ROTATE_PREPARE...\r\n", CLIMB_OFFSTAGE_TIMEOUT_MS);
+              onstage_confirmed = 1;
+              robot_state = ROBOT_RUNNING;
+              printf("[AutoClimb] Climb complete! Reversed for %dms then braked. State -> ROBOT_RUNNING.\r\n", CLIMB_OFFSTAGE_TIMEOUT_MS);
             }
           }
           break;
