@@ -40,7 +40,7 @@ void Auto_Control_Logic(uint8_t sw1, uint8_t sw3, float grey_front,float grey_le
     }
 }
 
-//自动推能量块函数
+//
 void Detect(volatile uint8_t *target, volatile float *yaw,volatile float *distance_front,volatile uint8_t* SW_L,volatile uint8_t* SW_R,volatile float* grey_front)
 {
     if(*target == 2|| *target == 0) //如果视觉识别到的目标是tag_type=2（能量块）或tag_type=3（能量块），则根据偏航角进行转向修正
