@@ -731,19 +731,50 @@ void StartMotion_Task(void *argument)
       }
     }
 
-    /* 实时更新底盘灰度渐变检测滤波器 */
+    /* 实时更新底盘灰度渐变检测滤波器 (历史样本与单调变化判定，区分突变) */
+    static float grey_history[4][4] = {0};
+    
     float g_sensors[4] = {Grey_Front, Grey_Back, Grey_Left, Grey_Right};
     for (int i = 0; i < 4; i++) {
-      if (g_sensors[i] >= 50.0f && g_sensors[i] <= 200.0f) {
-        if (grey_gradual_cnt[i] < 15) {
-          grey_gradual_cnt[i]++;
+      /* 滑动窗口更新历史记录 */
+      grey_history[i][3] = grey_history[i][2];
+      grey_history[i][2] = grey_history[i][1];
+      grey_history[i][1] = grey_history[i][0];
+      grey_history[i][0] = g_sensors[i];
+      
+      /* 检查 4 个历史样本是否全部落在 [50, 200] 区间内 */
+      uint8_t in_range = 1;
+      for (int k = 0; k < 4; k++) {
+        if (grey_history[i][k] < 50.0f || grey_history[i][k] > 200.0f) {
+          in_range = 0;
+          break;
         }
-        if (grey_gradual_cnt[i] >= GREY_GRADUAL_FILTER_CNT) {
+      }
+      
+      if (in_range) {
+        /* 计算连续差值 */
+        float diff1 = grey_history[i][0] - grey_history[i][1];
+        float diff2 = grey_history[i][1] - grey_history[i][2];
+        float diff3 = grey_history[i][2] - grey_history[i][3];
+        
+        /* 判定是否为单调递增或单调递减，且变化幅度适中（防噪点突变，防静态漂移） */
+        uint8_t is_gradual = 0;
+        
+        /* 1. 检查各步进差值在合理范围 [1.0, 45.0] 内 (过滤突变) */
+        if (fabs(diff1) >= 1.0f && fabs(diff1) <= 45.0f &&
+            fabs(diff2) >= 1.0f && fabs(diff2) <= 45.0f &&
+            fabs(diff3) >= 1.0f && fabs(diff3) <= 45.0f)
+        {
+          /* 2. 检查方向单调性 (同号，确认是缓慢增大或减小) */
+          if ((diff1 > 0.0f && diff2 > 0.0f && diff3 > 0.0f) ||
+              (diff1 < 0.0f && diff2 < 0.0f && diff3 < 0.0f))
+          {
+            is_gradual = 1;
+          }
+        }
+        
+        if (is_gradual) {
           grey_gradual_success = 1;
-        }
-      } else {
-        if (grey_gradual_cnt[i] > 0) {
-          grey_gradual_cnt[i]--;
         }
       }
     }
@@ -1776,19 +1807,25 @@ void StartMotion_Task(void *argument)
               while (t_angle > 180.0f) t_angle -= 360.0f;
               while (t_angle < -180.0f) t_angle += 360.0f;
               
+              static uint8_t re_align_filter = 0;
               if (fabs(t_angle) > 60.0f) {
-                  /* 敌人偏移角度过大（偏到侧方或后方），停止向前，重新原地自转对齐 */
-                  climb_target_angle = IMU_Data.Yaw + t_angle;
-                  while (climb_target_angle > 180.0f)  climb_target_angle -= 360.0f;
-                  while (climb_target_angle < -180.0f) climb_target_angle += 360.0f;
-                  
-                  climb_next_state = ROBOT_FIGHT_ATTACK_MOVE;
-                  robot_state = ROBOT_CLIMB_ROTATE_TO_DIR;
-                  init_rotate_pd = 0;
-                  Motor_Control(0, 0);
-                  printf("[FightAttack] Enemy moved to side/behind (%.1f). Re-aligning...\r\n", t_angle);
-                  break; // 跳出当前 state 逻辑
+                  re_align_filter++;
+                  if (re_align_filter >= 4) {
+                      /* 敌人偏移角度过大（偏到侧方或后方），停止向前，重新原地自转对齐 */
+                      climb_target_angle = IMU_Data.Yaw + t_angle;
+                      while (climb_target_angle > 180.0f)  climb_target_angle -= 360.0f;
+                      while (climb_target_angle < -180.0f) climb_target_angle += 360.0f;
+                      
+                      climb_next_state = ROBOT_FIGHT_ATTACK_MOVE;
+                      robot_state = ROBOT_CLIMB_ROTATE_TO_DIR;
+                      init_rotate_pd = 0;
+                      Motor_Control(0, 0);
+                      printf("[FightAttack] Enemy moved to side/behind (%.1f). Re-aligning...\r\n", t_angle);
+                      re_align_filter = 0;
+                      break; // 跳出当前 state 逻辑
+                  }
               } else {
+                  re_align_filter = 0;
                   /* 敌人在前方扇区内，计算转向速度（正值左转，负值右转） */
                   float Kp_track = 0.3f;
                   turn_speed = -t_angle * Kp_track;
@@ -1886,9 +1923,9 @@ void StartMotion_Task(void *argument)
           if (fall_imu_tilted && (fabs(IMU_Data.Pitch) <= 12.0f && fabs(IMU_Data.Roll) <= 12.0f))
           {
             /* IMU 倾斜后恢复水平 */
-            if (grey_gradual_success == 1)
+            if (Grey_Front > 170.0f && Grey_Back > 170.0f && Grey_Left > 170.0f && Grey_Right > 170.0f)
             {
-              /* 灰度渐变也触发，确诊掉下擂台！ */
+              /* 灰度读数均高（代表身处台下黑色地面），确诊掉下擂台！ */
               Motor_Control(0, 0);
               
               /* 计算相对于比赛开始时起始角度最近的 0°, 90°, -90°, 180° */
@@ -1908,9 +1945,9 @@ void StartMotion_Task(void *argument)
             }
             else
             {
-              /* 无灰度渐变，判定为台上撞击颠簸 */
+              /* 灰度读数显示仍在台上，判定为台上撞击颠簸 */
               fall_imu_tilted = 0;
-              printf("[FallDetection] IMU tilted but no grey gradual transition. Assumed collision/bump. Resuming running.\r\n");
+              printf("[FallDetection] IMU tilted but grey sensors represent ON-STAGE. Assumed collision/bump. Resuming running.\r\n");
             }
           }
         }
@@ -2096,7 +2133,14 @@ void StartMotion_Task(void *argument)
                 found = 1;
             }
 
+            static uint8_t enemy_filter_cnt = 0;
             if (found) {
+                if (enemy_filter_cnt < 10) enemy_filter_cnt++;
+            } else {
+                enemy_filter_cnt = 0;
+            }
+
+            if (found && enemy_filter_cnt >= 4) {
                 /* 角度标准化到 -180 ~ 180 */
                 while (t_angle > 180.0f) t_angle -= 360.0f;
                 while (t_angle < -180.0f) t_angle += 360.0f;
@@ -2116,10 +2160,6 @@ void StartMotion_Task(void *argument)
                     printf("[FightAttack] Steering to enemy at relative %.1f (target absolute %.1f)...\r\n", t_angle, climb_target_angle);
                 }
             } else {
-                // 原物理光电开关版边缘巡台与检测（备份留底）
-                // Auto_Control_Logic(sw1, sw3, Grey_Front,Grey_Left,Grey_Right,Grey_Back);     //自动巡台
-                // Detect(&global_vision_target, &global_vision_yaw,&IR_Distance_F, &IR_Sensor_L, &IR_Sensor_R,&Grey_Front);  //自动检测能量块并推下
-
                 // 新激光测距版边缘巡台与检测（当激光检测距离大于260时判定为边缘）
                 Auto_Control_Logic_Laser(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);     //自动巡台
                 Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2, &Grey_Front);  //自动检测能量块并推下
