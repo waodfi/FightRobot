@@ -96,6 +96,9 @@ float motor_angle_speed[4] = {0.0f};  // 角度环转向修正指令
 /* ===== 自主登台与软启动参数配置（可根据实测微调） ===== */
 #define SOFT_START_CONFIRM_CNT     5       /* 连续确认次数(防抖)，5次 x 20ms = 100ms */
 #define CLIMB_SPEED                (-100)  /* 后退冲台的速度(-100为全速) */
+#define CLIMB_LEFT_SPEED_LIMIT     (-100)  /* 左侧轮组(1,3)冲台速度 (-100为满速，可微调以纠正物理不对称导致的歪斜) */
+#define CLIMB_RIGHT_SPEED_LIMIT    (-70)  /* 右侧轮组(2,4)冲台速度 (-100为满速，可微调以纠正物理不对称导致的歪斜) */
+#define GREY_GRADUAL_FILTER_CNT    6       /* 连续采样次数，6 x 20ms = 120ms */
 
 #define ONSTAGE_GREY_SUCCESS_THRESHOLD 140.0f /* 台上灰度成功阈值，小于此值代表已成功上台 */
 #define DIST_CLOSE_THRESHOLD       30.0f   /* 判定靠墙/边缘距离(cm) */
@@ -136,7 +139,9 @@ typedef enum {
     ROBOT_TEST_ATTACK_PREPARE = 17,       /* 测试状态：自主识别并进攻准备 */
     ROBOT_TEST_ATTACK_RUNNING = 18,       /* 测试状态：自主识别并进攻识别中心 */
     ROBOT_TEST_ATTACK_MOVE    = 19,       /* 测试状态：自主识别并进攻后冲刺0.5S */
-    ROBOT_FIGHT_ATTACK_MOVE   = 20        /* 实战状态：追踪敌人直到撞边缘 */
+    ROBOT_FIGHT_ATTACK_MOVE   = 20,       /* 实战状态：追踪敌人直到撞边缘 */
+    ROBOT_INIT_CLIMB          = 21,       /* 初始启动直冲登台阶段 */
+    ROBOT_ALIGN_ORTHO         = 22        /* 掉台就近90度倍数方向对齐 */
 } RobotState_e;
 
 volatile RobotState_e robot_state = ROBOT_WAITING;  /* 状态机当前状态 */
@@ -153,6 +158,15 @@ static uint8_t  climb_pd_init        = 0;  /* 登台 PD 控制器初始化标志
 static float    last_yaw_err         = 0.0f; /* 上一次偏航角偏差 */
 static uint32_t squaring_start_tick  = 0;  /* 顶墙开始时间 */
 static uint8_t  is_test_mode         = 0;  /* 是否为串口 'Y' 触发的 270° 测试模式 */
+
+/* 软启动与掉台后登台状态监控变量 */
+static uint8_t  climb_imu_tilted      = 0;  /* 登台过程是否检测到过倾斜 */
+static uint8_t  climb_imu_prelim_success = 0; /* IMU初步判定成功登台标志 */
+static uint16_t grey_gradual_cnt[4]   = {0}; /* 4路灰度渐变变化计数器 */
+static uint8_t  grey_gradual_success  = 0;  /* 灰度传感器确认登台成功 */
+static uint8_t  onstage_confirmed     = 0;  /* 台上确认状态：0:未确认, 1:已确认 */
+static uint32_t onstage_confirm_timer = 0;  /* 台上确认计时器 */
+static uint8_t  fall_imu_tilted       = 0;  /* 掉台过程倾斜检测标志 */
 
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
@@ -475,7 +489,16 @@ HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
           }
 
           /* 3. PID 计算得出控制输出 [-100, 100] */
-          output = PID_Calc(&motor_pid[i], motor_target_speed[i], motor_rpm_norm[i]);
+          if (robot_state == ROBOT_INIT_CLIMB) {
+              if (i == 0 || i == 2) {
+                  output = CLIMB_LEFT_SPEED_LIMIT;
+              } else {
+                  output = CLIMB_RIGHT_SPEED_LIMIT;
+              }
+              PID_Clear(&motor_pid[i]);
+          } else {
+              output = PID_Calc(&motor_pid[i], motor_target_speed[i], motor_rpm_norm[i]);
+          }
       }
 
       /* 4. 更新电机 PWM 输出 (-100~100) 
@@ -649,6 +672,9 @@ void StartMotion_Task(void *argument)
   /* 初始化舵机 */
   Servo_Init();
   IMU_Init(); // 初始化IMU以接收数据
+  osDelay(100);
+  IMU_ZeroZAxis(); // 开启电源后，MPU6050清零
+  osDelay(100);
   
   uint16_t last_servo_angle = 90;  /* 记录上一个有效的舵机角度 */
   const uint16_t servo_step = 2;    /* 固定步进角度：每个周期移动2度 */
@@ -678,11 +704,10 @@ void StartMotion_Task(void *argument)
   float avg_L = sum_L / sample_cnt;
   float avg_R = sum_R / sample_cnt;
   
-  /* 根据环境自适应手掌挡住/松开的距离门限，最朝向不得低于安全下限 12.0cm/15.0cm */
-  float L_block_threshold   = (avg_L * 0.4f > 12.0f) ? (avg_L * 0.4f) : 12.0f;
-  float R_block_threshold   = (avg_R * 0.4f > 12.0f) ? (avg_R * 0.4f) : 12.0f;
-  float L_release_threshold = (avg_L * 0.7f > 15.0f) ? (avg_L * 0.7f) : 15.0f;
-  float R_release_threshold = (avg_R * 0.7f > 15.0f) ? (avg_R * 0.7f) : 15.0f;
+  float L_block_threshold   = 40.0f;  /* 30cm 内判定为手遮挡 */
+  float R_block_threshold   = 40.0f;
+  float L_release_threshold = 40.0f;  /* 40cm 外判定为手移开 */
+  float R_release_threshold = 40.0f;
   
   printf("[SoftStart] Calibrated baselines - L: avg=%.1f, block=%.1f, release=%.1f\r\n", avg_L, L_block_threshold, L_release_threshold);
   printf("[SoftStart] Calibrated baselines - R: avg=%.1f, block=%.1f, release=%.1f\r\n", avg_R, R_block_threshold, R_release_threshold);
@@ -691,6 +716,83 @@ void StartMotion_Task(void *argument)
   /* Infinite loop */
   for(;;)
   {
+    /* 串口全程打印小车“在台上”或“在台下”，便于调试 */
+    static uint32_t last_status_print_tick = 0;
+    if (HAL_GetTick() - last_status_print_tick >= 500)
+    {
+      last_status_print_tick = HAL_GetTick();
+      if (robot_state == ROBOT_RUNNING && onstage_confirmed == 1)
+      {
+        printf("[Status] 在台上\r\n");
+      }
+      else
+      {
+        printf("[Status] 在台下\r\n");
+      }
+    }
+
+    /* 实时更新底盘灰度渐变检测滤波器 */
+    float g_sensors[4] = {Grey_Front, Grey_Back, Grey_Left, Grey_Right};
+    for (int i = 0; i < 4; i++) {
+      if (g_sensors[i] >= 50.0f && g_sensors[i] <= 200.0f) {
+        if (grey_gradual_cnt[i] < 15) {
+          grey_gradual_cnt[i]++;
+        }
+        if (grey_gradual_cnt[i] >= GREY_GRADUAL_FILTER_CNT) {
+          grey_gradual_success = 1;
+        }
+      } else {
+        if (grey_gradual_cnt[i] > 0) {
+          grey_gradual_cnt[i]--;
+        }
+      }
+    }
+    
+    /* 如果车身处于水平状态且处于巡台模式，清除渐变状态防止陈旧数据误触发 */
+    static uint32_t flat_timer = 0;
+    if (fabs(IMU_Data.Pitch) <= 12.0f && fabs(IMU_Data.Roll) <= 12.0f) {
+      if (flat_timer == 0) {
+        flat_timer = HAL_GetTick();
+      } else if (HAL_GetTick() - flat_timer > 500) {
+        if (robot_state == ROBOT_RUNNING && fall_imu_tilted == 0) {
+          grey_gradual_success = 0;
+          for (int i = 0; i < 4; i++) grey_gradual_cnt[i] = 0;
+        }
+      }
+    } else {
+      flat_timer = 0;
+    }
+
+    /* 紧急控制检测（在循环最前部运行，无视当前状态，确保开启自愈、软启动或爬台阶等任何时期均可急停） */
+    if (Control_IsOnline())
+    {
+      PC_ControlData_t ctrl = Control_GetData();
+      
+      /* 紧急停机：按下遥控器 B 键 (buttons & 2) 立即停止所有电机并锁死在 FINISHED 状态 */
+      if (ctrl.buttons & 2)
+      {
+        robot_state = ROBOT_FINISHED;
+        Motor_Control(0, 0);
+        printf("已停止\r\n");
+        last_buttons = ctrl.buttons;
+        osDelay(20);
+        continue;
+      }
+      
+      /* 恢复状态：按下遥控器 X 键 (buttons & 4) 解除停机状态并恢复正常运行 */
+      if (ctrl.buttons & 4)
+      {
+        if (robot_state == ROBOT_FINISHED)
+        {
+          robot_state = ROBOT_RUNNING;
+        }
+        printf("已恢复\r\n");
+        last_buttons = ctrl.buttons;
+        osDelay(20);
+        continue;
+      }
+    }
+
     /* 如果处于自动登台的各种准备或冲刺状态，则完全接管常规控制流，执行独立的高频状态机 */
     if (robot_state != ROBOT_RUNNING)
     {
@@ -700,6 +802,15 @@ void StartMotion_Task(void *argument)
         {
           /* 等待状态：停止电机 */
           Motor_Control(0, 0);
+          
+          /* 调试打印：每500ms打印一次当前阻挡检测状态 */
+          static uint32_t last_wait_print = 0;
+          if (HAL_GetTick() - last_wait_print >= 500)
+          {
+            last_wait_print = HAL_GetTick();
+            printf("[SoftStart] WAITING. L_dist=%.1f (Thres=%.1f), R_dist=%.1f (Thres=%.1f)\r\n", 
+                   IR_Distance_L, L_block_threshold, IR_Distance_R, R_block_threshold);
+          }
           
           /* 检测双手是否挡住左右红外传感器 */
           if (IR_Distance_L < L_block_threshold && IR_Distance_R < R_block_threshold)
@@ -724,20 +835,102 @@ void StartMotion_Task(void *argument)
           /* 就绪状态：停止电机 */
           Motor_Control(0, 0);
           
+          /* 调试打印：每500ms打印一次当前释放检测状态 */
+          static uint32_t last_armed_print = 0;
+          if (HAL_GetTick() - last_armed_print >= 500)
+          {
+            last_armed_print = HAL_GetTick();
+            printf("[SoftStart] ARMED. L_dist=%.1f (Thres=%.1f), R_dist=%.1f (Thres=%.1f)\r\n", 
+                   IR_Distance_L, L_release_threshold, IR_Distance_R, R_release_threshold);
+            
+            /* 在就绪状态下，定时清零 Z 轴，确保释放瞬间 Yaw 接近绝对 0° */
+            IMU_ZeroZAxis();
+          }
+          
           /* 检测左右红外距离是否都大于自适应松开距离 */
           if (IR_Distance_L > L_release_threshold && IR_Distance_R > R_release_threshold)
           {
             soft_release_confirm++;
             if (soft_release_confirm >= SOFT_START_CONFIRM_CNT)
             {
-              robot_state = ROBOT_LAUNCH_DECIDE;
+              robot_state = ROBOT_INIT_CLIMB;
               soft_release_confirm = 0;
-              printf("[SoftStart] Hands released! State -> ROBOT_LAUNCH_DECIDE. Deciding platform position...\r\n");
+              climb_start_tick = HAL_GetTick();
+              grey_gradual_success = 0;
+              for(int i = 0; i < 4; i++) grey_gradual_cnt[i] = 0;
+              climb_imu_tilted = 0;
+              climb_imu_prelim_success = 0;
+              target_angle_lock = 0.0f;          // 已经清零，目标设定为绝对 0.0°
+              climb_pd_init = 0;                 // 重置 PD 控制器初始化标志
+              printf("[SoftStart] Hands released! State -> ROBOT_INIT_CLIMB. Climbing up...\r\n");
             }
           }
           else
           {
             soft_release_confirm = 0;
+          }
+          break;
+        }
+        
+        case ROBOT_INIT_CLIMB:
+        {
+          /* 初始登台冲刺：开环全速倒车，彻底禁用陀螺仪和速度渐变软启动，以获得最大初始扭矩和冲力 */
+          Motor_Control(0, -100);
+          
+          /* 登台时间固定为 1.0 秒 (1000ms) */
+          if (HAL_GetTick() - climb_start_tick >= 1000U)
+          {
+            /* 1S后立即刹车（闭环电机设为0速即为强力刹车） */
+            Motor_Control(0, 0);
+            osDelay(200); // 延时200ms以便让车体完全停稳消能
+            
+            /* 进入常规巡台 + 识别敌人模式 */
+            onstage_confirmed = 1; // 标记确切在台上，启动巡逻
+            control_mode = 1;      // 开启自动模式
+            robot_state = ROBOT_RUNNING;
+            
+            printf("[SoftClimb] Initial climb 1.0s complete. Braked. Transition to ROBOT_RUNNING (onstage).\r\n");
+          }
+          break;
+        }
+
+        case ROBOT_ALIGN_ORTHO:
+        {
+          /* 掉台就近角度对齐：计算最近的 0°, 90°, -90°, 180° / -180° 并原位旋转对齐 */
+          float yaw_err = IMU_Data.Yaw - target_angle_lock;
+          while (yaw_err > 180.0f)  yaw_err -= 360.0f;
+          while (yaw_err < -180.0f) yaw_err += 360.0f;
+          
+          if (fabs(yaw_err) < 3.0f)
+          {
+            /* 转向完成：停止电机，并切换到台下自动登台程序（ROBOT_SCANNING） */
+            Motor_Control(0, 0);
+            osDelay(200);
+            robot_state = ROBOT_SCANNING;
+            init_rotate_pd = 0;
+            printf("[OrthoAlign] Target angle %.1f aligned. Initiating auto climb SCANNING...\r\n", target_angle_lock);
+          }
+          else
+          {
+            /* 转向 PD 控制 */
+            if (init_rotate_pd == 0)
+            {
+              last_yaw_err = yaw_err;
+              init_rotate_pd = 1;
+            }
+            float d_err = (yaw_err - last_yaw_err);
+            last_yaw_err = yaw_err;
+            
+            float turn_speed = yaw_err * 0.8f + d_err * 7.5f;
+            if (turn_speed > 18.0f)  turn_speed = 18.0f;
+            if (turn_speed < -18.0f) turn_speed = -18.0f;
+            
+            if (fabs(yaw_err) > 5.0f)
+            {
+              if (turn_speed > 0.0f && turn_speed < 8.0f)  turn_speed = 8.0f;
+              if (turn_speed < 0.0f && turn_speed > -8.0f) turn_speed = -8.0f;
+            }
+            Motor_Control((int16_t)turn_speed, 0);
           }
           break;
         }
@@ -950,6 +1143,10 @@ void StartMotion_Task(void *argument)
             
             target_angle_lock = 0.0f; /* 锁定完美的 0° 倒退直走 */
             climb_pd_init = 0;        /* 清零 PD 控制器初始化标志 */
+            grey_gradual_success = 0;
+            for(int i = 0; i < 4; i++) grey_gradual_cnt[i] = 0;
+            climb_imu_tilted = 0;
+            climb_imu_prelim_success = 0;
             robot_state = ROBOT_CLIMBING_OFFSTAGE;
             climb_start_tick = HAL_GetTick();
             printf("[AutoClimb] Squaring complete! Yaw Z-axis reset to 0. Starting closed-loop climb...\r\n");
@@ -979,7 +1176,8 @@ void StartMotion_Task(void *argument)
           if (heading_correction > 30.0f)  heading_correction = 30.0f;
           if (heading_correction < -30.0f) heading_correction = -30.0f;
           
-          Motor_Control((int16_t)heading_correction, CLIMB_SPEED);
+          /* 闭环负反馈进行纠偏：对于反相安装的硬件，使用 -heading_correction 纠错。直接使用全速 CLIMB_SPEED，无软启动 */
+          Motor_Control((int16_t)-heading_correction, CLIMB_SPEED);
           
           uint32_t elapsed = HAL_GetTick() - climb_start_tick;
           
@@ -1000,14 +1198,29 @@ void StartMotion_Task(void *argument)
           }
           else
           {
-            if (elapsed >= CLIMB_BLIND_DURATION_MS)
+            /* 监测倾斜状态 */
+            if (fabs(IMU_Data.Pitch) > 12.0f || fabs(IMU_Data.Roll) > 12.0f)
             {
-              if (Grey_Front < ONSTAGE_GREY_SUCCESS_THRESHOLD || (elapsed >= CLIMB_OFFSTAGE_TIMEOUT_MS))
-              {
-                Motor_Control(0, 0);
-                robot_state = ROBOT_FINISHED;
-                printf("[AutoClimb] Climbing success! Elapsed: %lums, Front Grey: %.1f. State -> ROBOT_FINISHED. Staying static.\r\n", elapsed, Grey_Front);
-              }
+              climb_imu_tilted = 1;
+            }
+            
+            /* 如果检测到倾斜后又恢复水平 */
+            if (climb_imu_tilted && (fabs(IMU_Data.Pitch) <= 12.0f && fabs(IMU_Data.Roll) <= 12.0f))
+            {
+              Motor_Control(0, 0);
+              robot_state = ROBOT_RUNNING;
+              onstage_confirmed = 0; // 开启台上 1 秒灰度渐变确认
+              onstage_confirm_timer = HAL_GetTick();
+              climb_imu_tilted = 0;
+              printf("[AutoClimb] IMU tilt recovery detected! Preliminary success. Transition to ROBOT_RUNNING. Verifying grey gradual change...\r\n");
+            }
+            /* 3.5秒超时保护 */
+            else if (elapsed >= CLIMB_OFFSTAGE_TIMEOUT_MS)
+            {
+              Motor_Control(0, 0);
+              robot_state = ROBOT_SCANNING; // 登台失败，退回扫描
+              climb_imu_tilted = 0;
+              printf("[AutoClimb] Timeout (%dms) without IMU recovery. Climb failed! Fallback to ROBOT_SCANNING...\r\n", CLIMB_OFFSTAGE_TIMEOUT_MS);
             }
           }
           break;
@@ -1628,7 +1841,83 @@ void StartMotion_Task(void *argument)
       continue;
     }
 
-    if (!Control_IsOnline() && !is_test_mode) {
+    /* ========== ROBOT_RUNNING 台上运行时的确认与掉台检测 ========== */
+    if (robot_state == ROBOT_RUNNING)
+    {
+      static uint32_t onstage_settle_start_tick = 0;
+      
+      if (onstage_confirmed == 0)
+      {
+        onstage_settle_start_tick = 0; // 确保在验证期清零，以便进入确认期时重新计时
+        
+        /* 阶段 2：在台上运行的 1 秒钟内最终确认灰度渐变 */
+        if (grey_gradual_success == 1)
+        {
+          onstage_confirmed = 1;
+          printf("[OnstageConfirm] Grey gradual transition detected! Climb SUCCESS confirmed.\r\n");
+        }
+        else if (HAL_GetTick() - onstage_confirm_timer >= 1000U)
+        {
+          /* 超时未检测到渐变，最终确诊登台失败 */
+          Motor_Control(0, 0);
+          robot_state = ROBOT_SCANNING; // 重新执行自动登台
+          printf("[OnstageConfirm] Timeout (1s) without grey gradual change. Climb FAILED! Fallback to ROBOT_SCANNING...\r\n");
+          osDelay(20);
+          continue;
+        }
+      }
+      else
+      {
+        if (onstage_settle_start_tick == 0)
+        {
+          onstage_settle_start_tick = HAL_GetTick();
+          fall_imu_tilted = 0; // 开启防跌落监测前，清空登台阶段遗留的倾斜标志
+          printf("[FallDetection] onstage confirmed! Settle timer started (1s).\r\n");
+        }
+        
+        /* 阶段 3：已确定在台上并稳住 1s 后，开启实时掉台检测 */
+        if (HAL_GetTick() - onstage_settle_start_tick >= 1000U)
+        {
+          if (fabs(IMU_Data.Pitch) > 12.0f || fabs(IMU_Data.Roll) > 12.0f)
+          {
+            fall_imu_tilted = 1;
+          }
+          
+          if (fall_imu_tilted && (fabs(IMU_Data.Pitch) <= 12.0f && fabs(IMU_Data.Roll) <= 12.0f))
+          {
+            /* IMU 倾斜后恢复水平 */
+            if (grey_gradual_success == 1)
+            {
+              /* 灰度渐变也触发，确诊掉下擂台！ */
+              Motor_Control(0, 0);
+              
+              /* 计算相对于比赛开始时起始角度最近的 0°, 90°, -90°, 180° */
+              float yaw_div = IMU_Data.Yaw / 90.0f;
+              int rounded_index = (yaw_div >= 0.0f) ? (int)(yaw_div + 0.5f) : (int)(yaw_div - 0.5f);
+              target_angle_lock = (float)rounded_index * 90.0f;
+              while (target_angle_lock > 180.0f)  target_angle_lock -= 360.0f;
+              while (target_angle_lock < -180.0f) target_angle_lock += 360.0f;
+              
+              fall_imu_tilted = 0;
+              init_rotate_pd = 0;
+              onstage_settle_start_tick = 0;
+              robot_state = ROBOT_ALIGN_ORTHO; // 进行方向校正
+              printf("[FallDetection] Fall CONFIRMED! Target alignment Yaw: %.1f. Transition to ROBOT_ALIGN_ORTHO...\r\n", target_angle_lock);
+              osDelay(20);
+              continue;
+            }
+            else
+            {
+              /* 无灰度渐变，判定为台上撞击颠簸 */
+              fall_imu_tilted = 0;
+              printf("[FallDetection] IMU tilted but no grey gradual transition. Assumed collision/bump. Resuming running.\r\n");
+            }
+          }
+        }
+      }
+    }
+
+    if (control_mode == 0 && !Control_IsOnline() && !is_test_mode) {
         motor_target_speed[0] = 0.0f;
         motor_target_speed[1] = 0.0f;
         motor_target_speed[2] = 0.0f;

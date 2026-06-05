@@ -220,6 +220,7 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
                 dev1_initialized = 1;
                 dev1_fail_count = 0;
                 vl53l0x_start_continuous_measurements(&vl53l0x_dev1);
+                last_init_tick1 = current_tick; // 记录成功初始化的时刻作为时间基准
                 printf("Laser 1 re-initialized successfully\r\n");
             } else {
                 return 0xFFFF;
@@ -230,13 +231,17 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
 
         // 自愈判定：如果读到 0、8191 或 0xFFFF，说明测量失效或总线异常
         if (range == 0 || range == 8191 || range == 0xFFFF) {
-            dev1_fail_count++;
-            if (dev1_fail_count >= MAX_CONSECUTIVE_FAILS) {
-                // 连续多次失效，执行总线恢复并标记为未初始化以触发重新初始化
-                SoftI2C_Recover(SOFT_I2C_BUS_1);
-                dev1_initialized = 0;
-                printf("Laser 1 consecutive failures (%d). Lockup detected (range: %d). Triggering recovery...\r\n", dev1_fail_count, range);
-                dev1_fail_count = 0;
+            // 在刚初始化的 300ms 内，忽略 8191，允许芯片完成首个周期的转换；对于 0 和 0xFFFF（总线锁死/断线）依然即时处理
+            if (range != 8191 || (current_tick - last_init_tick1 > 300)) {
+                dev1_fail_count++;
+                if (dev1_fail_count >= MAX_CONSECUTIVE_FAILS) {
+                    // 连续多次失效，执行总线恢复并标记为未初始化以触发重新初始化
+                    SoftI2C_Recover(SOFT_I2C_BUS_1);
+                    dev1_initialized = 0;
+                    last_init_tick1 = current_tick;
+                    printf("Laser 1 consecutive failures (%d). Lockup detected (range: %d). Triggering recovery...\r\n", dev1_fail_count, range);
+                    dev1_fail_count = 0;
+                }
             }
             return 0xFFFF; // 失效时返回最大值，触发边缘防跌落保护，确保安全
         } else {
@@ -252,6 +257,7 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
                 dev2_initialized = 1;
                 dev2_fail_count = 0;
                 vl53l0x_start_continuous_measurements(&vl53l0x_dev2);
+                last_init_tick2 = current_tick; // 记录成功初始化的时刻作为时间基准
                 printf("Laser 2 re-initialized successfully\r\n");
             } else {
                 return 0xFFFF;
@@ -262,13 +268,17 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
 
         // 自愈判定：如果读到 0、8191 或 0xFFFF，说明测量失效或总线异常
         if (range == 0 || range == 8191 || range == 0xFFFF) {
-            dev2_fail_count++;
-            if (dev2_fail_count >= MAX_CONSECUTIVE_FAILS) {
-                // 连续多次失效，执行总线恢复并标记为未初始化以触发重新初始化
-                SoftI2C_Recover(SOFT_I2C_BUS_2);
-                dev2_initialized = 0;
-                printf("Laser 2 consecutive failures (%d). Lockup detected (range: %d). Triggering recovery...\r\n", dev2_fail_count, range);
-                dev2_fail_count = 0;
+            // 在刚初始化的 300ms 内，忽略 8191，允许芯片完成首个周期的转换；对于 0 和 0xFFFF（总线锁死/断线）依然即时处理
+            if (range != 8191 || (current_tick - last_init_tick2 > 300)) {
+                dev2_fail_count++;
+                if (dev2_fail_count >= MAX_CONSECUTIVE_FAILS) {
+                    // 连续多次失效，执行总线恢复并标记为未初始化以触发重新初始化
+                    SoftI2C_Recover(SOFT_I2C_BUS_2);
+                    dev2_initialized = 0;
+                    last_init_tick2 = current_tick;
+                    printf("Laser 2 consecutive failures (%d). Lockup detected (range: %d). Triggering recovery...\r\n", dev2_fail_count, range);
+                    dev2_fail_count = 0;
+                }
             }
             return 0xFFFF; // 失效时返回最大值，触发边缘防跌落保护，确保安全
         } else {

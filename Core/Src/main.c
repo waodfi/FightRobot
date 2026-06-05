@@ -351,6 +351,25 @@ void IMU_HW_SerialSend(uint8_t *data, uint16_t len)
   HAL_UART_Transmit(&huart3, data, len, 100);
 }
 
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART3)
+    {
+        __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_PEF | UART_CLEAR_FEF);
+        HAL_UARTEx_ReceiveToIdle_DMA(huart, imu_rx_buffer, IMU_RX_BUFFER_SIZE);
+    }
+    else if (huart->Instance == USART1)
+    {
+        __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_PEF | UART_CLEAR_FEF);
+        Control_Init();
+    }
+    else if (huart->Instance == USART2)
+    {
+        __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_PEF | UART_CLEAR_FEF);
+        MachineVision_Init(huart);
+    }
+}
+
 
 /* USER CODE END 4 */
 

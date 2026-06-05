@@ -124,6 +124,9 @@ def serial_receive_thread(ser):
                     elif 'Angle Control:' in line:
                         if 'Enabled' in line: angle_enabled_display = 1
                         elif 'Disabled' in line: angle_enabled_display = 0
+                    else:
+                        # 对于不属于 UI 监控字段的其他普通打印（如“已停止”、“已恢复”、“[Status] 在台下/台上”等），直接输出到控制台终端，方便调试！
+                        print(f"[STM32 LOG] {line}")
         except: pass
         time.sleep(0.001)
 
@@ -372,6 +375,15 @@ def main():
             if keys[pygame.K_RETURN]: buttons_mask |= 48
 
         packet = f'<{vx_fwd_back},{vy_left_right},{lt_val},{rt_val},{buttons_mask}>\n'
+        
+        # 当按键状态发生改变时，在控制台打印调试信息，帮助用户核对手柄映射与按键响应
+        if buttons_mask != prev_buttons_mask:
+            pressed_buttons = []
+            for i in range(16):
+                if (buttons_mask & (1 << i)):
+                    btn_name = {0: 'A', 1: 'B', 2: 'X', 3: 'Y', 4: 'LB', 5: 'RB', 6: 'Back', 7: 'Start'}.get(i, f'Btn{i}')
+                    pressed_buttons.append(btn_name)
+            print(f"[Python LOG] buttons_mask: {buttons_mask} (按下键: {', '.join(pressed_buttons) if pressed_buttons else '无'})")
         
         # 检测按钮 48 的上升沿以切换模式显示
         if (buttons_mask & 48) and not (prev_buttons_mask & 48):
