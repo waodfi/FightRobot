@@ -97,7 +97,7 @@ float motor_angle_speed[4] = {0.0f};  // 角度环转向修正指令
 #define SOFT_START_CONFIRM_CNT     5       /* 连续确认次数(防抖)，5次 x 20ms = 100ms */
 #define CLIMB_SPEED                (-100)  /* 后退冲台的速度(-100为全速) */
 #define CLIMB_LEFT_SPEED_LIMIT     (-100)  /* 左侧轮组(1,3)冲台速度 (-100为满速，可微调以纠正物理不对称导致的歪斜) */
-#define CLIMB_RIGHT_SPEED_LIMIT    (-100)  /* 右侧轮组(2,4)冲台速度 (-100为满速，可微调以纠正物理不对称导致的歪斜) */
+#define CLIMB_RIGHT_SPEED_LIMIT    (-85)  /* 右侧轮组(2,4)冲台速度 (-100为满速，可微调以纠正物理不对称导致的歪斜) */
 #define GREY_GRADUAL_FILTER_CNT    6       /* 连续采样次数，6 x 20ms = 120ms */
 
 #define ONSTAGE_GREY_SUCCESS_THRESHOLD 140.0f /* 台上灰度成功阈值，小于此值代表已成功上台 */

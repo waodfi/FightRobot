@@ -118,6 +118,30 @@ void Detect(volatile uint8_t *target, volatile float *yaw,volatile float *distan
 #define EDGE_LASER_SLOW_MM       250U
 #define EDGE_LASER_TRIGGER_MM    260U
 
+static uint8_t Motion_GreyHighCount(float grey_front, float grey_left, float grey_right, float grey_back)
+{
+    uint8_t count = 0;
+    if (grey_front > EDGE_GREY_HIGH_THRESHOLD) count++;
+    if (grey_left  > EDGE_GREY_HIGH_THRESHOLD) count++;
+    if (grey_right > EDGE_GREY_HIGH_THRESHOLD) count++;
+    if (grey_back  > EDGE_GREY_HIGH_THRESHOLD) count++;
+    return count;
+}
+
+static void Motion_BackAwayWithRearGuard(int16_t speed, uint32_t delay_ms)
+{
+    Motor_Control(0, speed);
+    uint32_t start_tick = HAL_GetTick();
+    while (HAL_GetTick() - start_tick < delay_ms)
+    {
+        if (Grey_Back > 250.0f)
+        {
+            break;
+        }
+        osDelay(10);
+    }
+}
+
 uint8_t Motion_IsEdgeRisk(uint16_t laser1, uint16_t laser2, float grey_front)
 {
     uint8_t laser_edge = (laser1 > 260U || laser2 > 260U);
