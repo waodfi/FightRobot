@@ -60,7 +60,8 @@ sensor_data = {
     '灰度': '等待数据...',
     '激光': '等待数据...',
     '转速': '等待数据...',
-    '视觉': '等待数据...'
+    '视觉数据': '等待数据...',
+    '视觉统计': '等待数据...'
 }
 
 control_mode_display = 0  # 0=遥控模式, 1=自动控制模式
@@ -91,22 +92,46 @@ def serial_receive_thread(ser):
                     if line.startswith('VISION '):
                         try:
                             parts = line.split()
-                            seq_value = ''
-                            tag_type_value = ''
-                            yaw_value = ''
-                            for part in parts:
-                                if part.startswith('seq='):
-                                    seq_value = part.split('=', 1)[1]
-                                elif part.startswith('tag_type='):
-                                    tag_type_value = part.split('=', 1)[1]
-                                elif part.startswith('yaw='):
-                                    yaw_value = part.split('=', 1)[1]
-                            sensor_data['视觉'] = f'SEQ: {seq_value}, TAG_TYPE: {tag_type_value}, YAW: {yaw_value}'
+                            kvs = {}
+                            for part in parts[1:]:
+                                if '=' in part:
+                                    k, v = part.split('=', 1)
+                                    kvs[k] = v
+                            
+                            res = []
+                            if 'seq' in kvs: res.append(f"SEQ:{kvs['seq']}")
+                            if 'tag_id' in kvs: res.append(f"ID:{kvs['tag_id']}")
+                            if 'tag_type' in kvs: res.append(f"TYPE:{kvs['tag_type']}")
+                            if 'yaw' in kvs: res.append(f"YAW:{kvs['yaw']}°")
+                            if 'pitch' in kvs: res.append(f"PIT:{kvs['pitch']}°")
+                            if 'dist' in kvs: res.append(f"DIST:{kvs['dist']}mm")
+                            if 'tx' in kvs or 'ty' in kvs or 'tz' in kvs:
+                                res.append(f"T:({kvs.get('tx','0')},{kvs.get('ty','0')},{kvs.get('tz','0')})")
+                            if 'flags' in kvs: res.append(f"FLG:{kvs['flags']}")
+                            
+                            sensor_data['视觉数据'] = "  ".join(res)
                         except Exception:
-                            sensor_data['视觉'] = line
+                            sensor_data['视觉数据'] = line
                     elif line.startswith('VISION_STAT'):
-                        # 下位机每秒打印：rx / 成功帧 / CRC错 / 格式错 / 环缓冲溢出
-                        sensor_data['视觉'] = line.replace('VISION_STAT ', '解析统计: ')
+                        try:
+                            parts = line.split()
+                            kvs = {}
+                            for part in parts[1:]:
+                                if '=' in part:
+                                    k, v = part.split('=', 1)
+                                    kvs[k] = v
+                            
+                            res = []
+                            if 'rx' in kvs: res.append(f"RX:{kvs['rx']}B")
+                            if 'ok_v' in kvs: res.append(f"V_OK:{kvs['ok_v']}")
+                            if 'ok_c' in kvs: res.append(f"C_OK:{kvs['ok_c']}")
+                            if 'crc_err' in kvs: res.append(f"CRC_ERR:{kvs['crc_err']}")
+                            if 'fmt_err' in kvs: res.append(f"FMT_ERR:{kvs['fmt_err']}")
+                            if 'ovf' in kvs: res.append(f"OVF:{kvs['ovf']}")
+                            
+                            sensor_data['视觉统计'] = "  ".join(res)
+                        except Exception:
+                            sensor_data['视觉统计'] = line.replace('VISION_STAT ', '')
                     elif 'Roll:' in line or 'Pitch:' in line:
                         sensor_data['姿态'] = line
                         # 解析 IMU 数据: "Roll: x.xx, Pitch: y.yy, Yaw: z.zz, ..."
@@ -491,7 +516,8 @@ def main():
             '灰度': (255, 200, 100),      # 橙色
             '激光': (255, 150, 150),      # 红色
             '转速': (200, 150, 255),      # 紫色
-            '视觉': (100, 255, 220)       # 青绿色
+            '视觉数据': (100, 255, 220),   # 青绿色
+            '视觉统计': (120, 220, 255)    # 亮蓝色
         }
         
         for label, value in sensor_data.items():
@@ -499,7 +525,7 @@ def main():
             label_text = f'>> {label}: '
             screen.blit(font.render(label_text, True, color), (100, y))
             screen.blit(font.render(value, True, (200, 200, 200)), (380, y))
-            y += 60
+            y += 48
             
         pygame.display.flip()
         clock.tick(SEND_RATE_HZ)

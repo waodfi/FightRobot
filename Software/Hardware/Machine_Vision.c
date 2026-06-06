@@ -1,5 +1,6 @@
 #include "Machine_Vision.h"
 #include <string.h>
+#include <stdio.h>
 
 typedef enum {
 	MV_PARSE_WAIT_HEAD1 = 0,
@@ -225,35 +226,41 @@ uint8_t MachineVision_GetFrame(MV_ParsedFrame_t *out_frame)
 				if (s_cur_len > MV_MAX_PAYLOAD_LEN) {
 					s_mv_stats.format_error_frames++;
 					s_parse_state = MV_PARSE_WAIT_HEAD1;
+					printf("[VisionError] Format error! Payload len (%u) exceeds max (%u). Raw header: AA 55 %02X %02X\r\n", s_cur_len, MV_MAX_PAYLOAD_LEN, s_cur_type, s_cur_len);
 				} else if (s_cur_len == 0U) {
 					s_parse_state = MV_PARSE_WAIT_CRC;
 				} else {
 					s_parse_state = MV_PARSE_WAIT_PAYLOAD;
 				}
 				break;
-
+ 
 			case MV_PARSE_WAIT_PAYLOAD:
 				s_payload_buf[s_payload_idx++] = byte;
 				if (s_payload_idx >= s_cur_len) {
 					s_parse_state = MV_PARSE_WAIT_CRC;
 				}
 				break;
-
+ 
 			case MV_PARSE_WAIT_CRC:
 				crc_input[0] = s_cur_type;
 				crc_input[1] = s_cur_len;
 				if (s_cur_len > 0U) {
 					(void)memcpy(&crc_input[2], s_payload_buf, s_cur_len);
 				}
-
+ 
 				expect_crc = mv_crc8_maxim(crc_input, (uint16_t)(2U + s_cur_len));
 				s_parse_state = MV_PARSE_WAIT_HEAD1;
-
+ 
 				if (expect_crc != byte) {
 					s_mv_stats.crc_error_frames++;
+					printf("[VisionError] CRC mismatch! Expected: 0x%02X, Got: 0x%02X. Raw frame: AA 55 %02X %02X ", expect_crc, byte, s_cur_type, s_cur_len);
+					for (uint8_t idx = 0; idx < s_cur_len; idx++) {
+						printf("%02X ", s_payload_buf[idx]);
+					}
+					printf("\r\n");
 					break;
 				}
-
+ 
 				if (mv_decode_frame(out_frame) != 0U) {
 					return 1U;
 				}

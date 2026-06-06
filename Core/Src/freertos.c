@@ -97,7 +97,7 @@ float motor_angle_speed[4] = {0.0f};  // 角度环转向修正指令
 #define SOFT_START_CONFIRM_CNT     5       /* 连续确认次数(防抖)，5次 x 20ms = 100ms */
 #define CLIMB_SPEED                (-100)  /* 后退冲台的速度(-100为全速) */
 #define CLIMB_LEFT_SPEED_LIMIT     (-100)  /* 左侧轮组(1,3)冲台速度 (-100为满速，可微调以纠正物理不对称导致的歪斜) */
-#define CLIMB_RIGHT_SPEED_LIMIT    (-80)  /* 右侧轮组(2,4)冲台速度 (-100为满速，可微调以纠正物理不对称导致的歪斜) */
+#define CLIMB_RIGHT_SPEED_LIMIT    (-100)  /* 右侧轮组(2,4)冲台速度 (-100为满速，可微调以纠正物理不对称导致的歪斜) */
 #define GREY_GRADUAL_FILTER_CNT    6       /* 连续采样次数，6 x 20ms = 120ms */
 
 #define ONSTAGE_GREY_SUCCESS_THRESHOLD 140.0f /* 台上灰度成功阈值，小于此值代表已成功上台 */
@@ -632,25 +632,30 @@ void StartVision_Task(void *argument)
         global_vision_target = frame.data.vision.tag_type;
         global_vision_yaw = frame.data.vision.yaw_cdeg / 100.0f;
 
-        printf("VISION seq=%u tag_type=%u yaw=%.2f\r\n",
+        printf("VISION seq=%u tag_id=%u tag_type=%u yaw=%.2f pitch=%.2f dist=%u tx=%d ty=%d tz=%d flags=%02X\r\n",
                frame.data.vision.seq,
+               frame.data.vision.tag_id,
                frame.data.vision.tag_type,
-               frame.data.vision.yaw_cdeg / 100.0f);
+               frame.data.vision.yaw_cdeg / 100.0f,
+               frame.data.vision.pitch_cdeg / 100.0f,
+               frame.data.vision.dist_mm,
+               frame.data.vision.tx_mm,
+               frame.data.vision.ty_mm,
+               frame.data.vision.tz_mm,
+               frame.data.vision.flags);
       }
     }
 
     if (HAL_GetTick() - vision_print_tick >= 1000U) {
       vision_print_tick = HAL_GetTick();
       MachineVision_GetStats(&stats);
-      //视觉解析统计部分
-      /*
-      printf("VISION_STAT rx=%lu ok_v=%lu crc_err=%lu fmt_err=%lu ovf=%lu\r\n",
+      printf("VISION_STAT rx=%lu ok_v=%lu ok_c=%lu crc_err=%lu fmt_err=%lu ovf=%lu\r\n",
              stats.total_rx_bytes,
              stats.parsed_vision_frames,
+             stats.parsed_cmd_frames,
              stats.crc_error_frames,
              stats.format_error_frames,
              stats.ring_overflow_bytes);
-      */
     }
   }
   /* USER CODE END StartVision_Task */
