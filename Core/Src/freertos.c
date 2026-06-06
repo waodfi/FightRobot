@@ -1836,7 +1836,7 @@ void StartMotion_Task(void *argument)
           Motor_Control((int16_t)turn_speed, 18);
           
           /* 实时检测边缘：一旦有一侧激光检测到边缘值（> 260），立即制动、退后、转身，重回巡台 */
-          if (laser_dist_1 > 260 || laser_dist_2 > 260)
+          if (Motion_IsEdgeRisk(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back))
           {
             printf("[FightAttack] Edge detected (Laser1: %d, Laser2: %d). Canceling attack, backing up and turning...\r\n", laser_dist_1, laser_dist_2);
             
@@ -2194,7 +2194,7 @@ void StartMotion_Task(void *argument)
           if (onstage_confirmed == 1 || is_test_mode == 1)
           {
             // 新激光测距版边缘巡台与检测（当激光检测距离大于260时判定为边缘）
-            uint8_t edge_triggered = (laser_dist_1 > 260 || laser_dist_2 > 260);
+            uint8_t edge_triggered = Motion_IsEdgeRisk(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);
             Auto_Control_Logic_Laser(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);     //自动巡台
             
             if (edge_triggered)
@@ -2206,7 +2206,8 @@ void StartMotion_Task(void *argument)
             }
             else
             {
-                Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2, &Grey_Front);  //自动检测能量块并推下
+                Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2,
+                             &Grey_Front, &Grey_Left, &Grey_Right, &Grey_Back);  //自动检测能量块并推下
             }
           }
           else

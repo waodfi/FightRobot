@@ -108,10 +108,28 @@ void Detect(volatile uint8_t *target, volatile float *yaw,volatile float *distan
 
 }
 
+static uint8_t Motion_GreyHighCount(float grey_front, float grey_left, float grey_right, float grey_back)
+{
+    uint8_t count = 0;
+    if (grey_front > 190.0f) count++;
+    if (grey_left  > 190.0f) count++;
+    if (grey_right > 190.0f) count++;
+    if (grey_back  > 190.0f) count++;
+    return count;
+}
+
+uint8_t Motion_IsEdgeRisk(uint16_t laser1, uint16_t laser2, float grey_front, float grey_left, float grey_right, float grey_back)
+{
+    uint8_t laser_edge = (laser1 > 260U || laser2 > 260U);
+    uint8_t grey_edge = (Motion_GreyHighCount(grey_front, grey_left, grey_right, grey_back) >= 3U);
+    return (laser_edge || grey_edge);
+}
+
 void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front, float grey_left, float grey_right, float grey_back)
 {
+    uint8_t grey_high_count = Motion_GreyHighCount(grey_front, grey_left, grey_right, grey_back);
     // 当激光传感器开始测得大于 250mm 时，说明小车已接近边缘，主动降速至 2；否则保持正常速度 18 巡台
-    if (laser1 > 250 || laser2 > 250)
+    if (laser1 > 250 || laser2 > 250 || grey_high_count >= 2U)
     {
         Motor_Control(0, 2); 
     }
@@ -160,12 +178,24 @@ void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front
         Motor_Control(0, 0);
         osDelay(125);
     }
+    else if(grey_high_count >= 3U)
+    {
+        Motor_Control(0, -60);
+        osDelay(80);
+        Motor_Control(0, -22);
+        osDelay(220);
+        Motor_Control(-35, 0);
+        osDelay(450);
+        Motor_Control(0, 0);
+        osDelay(125);
+    }
 }
 
 // 自动推能量块函数（激光测距版）
 // laser1 对应原本的 SW_L，laser2 对应原本 of SW_R
 // 当激光测量距离大于 260 mm 时说明能量块已被推下（下方悬空）
-void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float *distance_front, volatile uint16_t *laser1, volatile uint16_t *laser2, volatile float *grey_front)
+void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float *distance_front, volatile uint16_t *laser1, volatile uint16_t *laser2,
+                  volatile float *grey_front, volatile float *grey_left, volatile float *grey_right, volatile float *grey_back)
 {
     if(*target == 2 || *target == 0) //如果视觉识别到的目标是tag_type=2或tag_type=0，则根据偏航角进行转向修正
     {
@@ -193,7 +223,7 @@ void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float 
             uint32_t push_start_time = HAL_GetTick(); // 记录推块开始时间
             
             // 去掉灰度判断，只靠激光大于 260 触发
-            while(!(*laser1 > 260 || *laser2 > 260)) 
+            while(!Motion_IsEdgeRisk(*laser1, *laser2, *grey_front, *grey_left, *grey_right, *grey_back))
             {
                 osDelay(50);
                 // 添加一个10秒超时机制，防止死循环
