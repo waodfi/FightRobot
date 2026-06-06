@@ -1877,7 +1877,7 @@ void StartMotion_Task(void *argument)
     }
 
     /* ========== ROBOT_RUNNING 台上运行时的确认与掉台检测 ========== */
-    if (robot_state == ROBOT_RUNNING)
+    if (robot_state == ROBOT_RUNNING && is_test_mode == 0)
     {
       static uint32_t onstage_settle_start_tick = 0;
       
@@ -2373,13 +2373,50 @@ void StartAngle_Task(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+static void Debug_EnterOnstageRun(const char *source)
+{
+  is_test_mode = 1;
+  control_mode = 1;
+  onstage_confirmed = 1;
+  verification_start_tick = 0;
+  robot_state = ROBOT_RUNNING;
+  Motor_Control(0, 0);
+  printf("[SerialTrigger] %s received! Force ON-STAGE debug: ROBOT_RUNNING, auto mode, fall detection bypassed.\r\n",
+         source);
+}
+
 void Trigger_Debug_Launch(void)
 {
-  /* 串口输入 Y / y 启动自动巡台测试模式 */
-  is_test_mode = 1;             /* 标记为测试模式以绕过遥控离线检查 */
-  control_mode = 1;             /* 强制切换到自动控制模式 */
-  robot_state = ROBOT_RUNNING;  /* 设为常规运行状态，以便进入自动巡台逻辑 */
-  printf("[SerialTrigger] Y received! Starting Auto Patrol Laser Test...\r\n");
+  Debug_EnterOnstageRun("Y");
+}
+
+void Trigger_Debug_RunOnstage(void)
+{
+  Debug_EnterOnstageRun("@RUN");
+}
+
+void Trigger_Debug_ClimbScan(void)
+{
+  is_test_mode = 1;
+  control_mode = 1;
+  onstage_confirmed = 0;
+  verification_start_tick = 0;
+  climb_pd_init = 0;
+  climb_start_tick = HAL_GetTick();
+  robot_state = ROBOT_TEST_ROTATE_PREPARE;
+  Motor_Control(0, 0);
+  printf("[SerialTrigger] @CLIMB received! Force climb/scan debug: ROBOT_TEST_ROTATE_PREPARE.\r\n");
+}
+
+void Trigger_Debug_Stop(void)
+{
+  is_test_mode = 0;
+  control_mode = 0;
+  onstage_confirmed = 0;
+  verification_start_tick = 0;
+  robot_state = ROBOT_FINISHED;
+  Motor_Control(0, 0);
+  printf("[SerialTrigger] @STOP received! Motors stopped. State -> ROBOT_FINISHED.\r\n");
 }
 /* USER CODE END Application */
 
