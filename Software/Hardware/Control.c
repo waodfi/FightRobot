@@ -70,30 +70,63 @@ extern void Trigger_Debug_RunOnstage(void);
 extern void Trigger_Debug_ClimbScan(void);
 extern void Trigger_Debug_Stop(void);
 
+#define CMD_ACC_SIZE 256
+static char s_cmd_acc_buf[CMD_ACC_SIZE];
+static uint16_t s_cmd_acc_len = 0;
+
 /**
  * @brief 供主外设中断或 HAL_UARTEx_RxEventCallback 调用的串口接收业务函数
  */
 void Control_UART_RxCallback(UART_HandleTypeDef *huart, uint16_t Size) {
     if (huart->Instance == USART1) {
-        // 添加字符串结束符保证 strchr 不越界
-        rx_buffer[Size < RX_BUF_SIZE ? Size : (RX_BUF_SIZE - 1)] = '\0';
+        // 将新收到的字节累加到静态缓冲区中
+        for (uint16_t i = 0; i < Size; i++) {
+            char c = (char)rx_buffer[i];
+            if (s_cmd_acc_len < CMD_ACC_SIZE - 1) {
+                s_cmd_acc_buf[s_cmd_acc_len++] = c;
+            } else {
+                // 缓冲区满，整体左移腾出空间
+                (void)memmove(s_cmd_acc_buf, s_cmd_acc_buf + 1, CMD_ACC_SIZE - 1);
+                s_cmd_acc_buf[CMD_ACC_SIZE - 2] = c;
+            }
+        }
+        s_cmd_acc_buf[s_cmd_acc_len] = '\0';
         
-        const char *text = (const char*)rx_buffer;
-
-        if (strstr(text, "@RUN") != NULL || strstr(text, "@run") != NULL) {
+        uint8_t cmd_matched = 0;
+        if (strstr(s_cmd_acc_buf, "@RUN") != NULL || strstr(s_cmd_acc_buf, "@run") != NULL) {
             Trigger_Debug_RunOnstage();
-        } else if (strstr(text, "@CLIMB") != NULL || strstr(text, "@climb") != NULL) {
+            cmd_matched = 1;
+        } else if (strstr(s_cmd_acc_buf, "@CLIMB") != NULL || strstr(s_cmd_acc_buf, "@climb") != NULL) {
             Trigger_Debug_ClimbScan();
-        } else if (strstr(text, "@STOP") != NULL || strstr(text, "@stop") != NULL) {
+            cmd_matched = 1;
+        } else if (strstr(s_cmd_acc_buf, "@STOP") != NULL || strstr(s_cmd_acc_buf, "@stop") != NULL) {
             Trigger_Debug_Stop();
-        } else if (strstr(text, "Y") != NULL || strstr(text, "y") != NULL) {
+            cmd_matched = 1;
+        } else if (strstr(s_cmd_acc_buf, "Y") != NULL || strstr(s_cmd_acc_buf, "y") != NULL) {
             Trigger_Debug_Launch();
+            cmd_matched = 1;
         } else {
-            // 解析数据
-            Control_ParseData(text);
+            // 检查累积缓冲区中是否包含一个完整的控制指令数据包，即包含 '<' 且其后有 '>'
+            char *start = strchr(s_cmd_acc_buf, '<');
+            char *end = strchr(s_cmd_acc_buf, '>');
+            if (start != NULL && end != NULL && end > start) {
+                Control_ParseData(s_cmd_acc_buf);
+                // 清除已解析过的这包数据
+                uint16_t parsed_len = (uint16_t)(end - start + 1);
+                (void)memmove(s_cmd_acc_buf, end + 1, (size_t)(s_cmd_acc_len - (end - s_cmd_acc_buf)));
+                s_cmd_acc_len -= parsed_len;
+                s_cmd_acc_buf[s_cmd_acc_len] = '\0';
+            }
+        }
+        
+        if (cmd_matched) {
+            // 一旦匹配到文本调试指令，直接清空累积缓冲区
+            s_cmd_acc_len = 0;
+            s_cmd_acc_buf[0] = '\0';
         }
         
         // 重新开启 DMA 接收
         HAL_UARTEx_ReceiveToIdle_DMA(&huart1, rx_buffer, RX_BUF_SIZE);
     }
 }
+
