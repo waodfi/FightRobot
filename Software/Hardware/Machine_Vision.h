@@ -70,6 +70,7 @@ void MachineVision_Init(UART_HandleTypeDef *huart);
 void MachineVision_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size);
 uint8_t MachineVision_GetFrame(MV_ParsedFrame_t *out_frame);
 void MachineVision_GetStats(MV_Stats_t *out_stats);
+void MachineVision_SendTestFrame(void);
 
 #ifdef __cplusplus
 }
