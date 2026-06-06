@@ -331,86 +331,108 @@ void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front
     }
 }
 
+#define PUSH_EXTEND_MS  120  /* 边缘前冲收尾延时(ms)，确保块被完全推下 */
+
+// 静态状态跟踪变量
+static uint32_t s_last_seen_tick = 0;
+static float    s_last_seen_yaw = 0.0f;
+static uint8_t  s_is_pushing = 0;
+static uint32_t s_push_start_tick = 0;
+
 // 自动推能量块函数（激光测距版）
 // laser1 对应原本的 SW_L，laser2 对应原本 of SW_R
 // 当激光测量距离大于 260 mm 时说明能量块已被推下（下方悬空）
 void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float *distance_front, volatile uint16_t *laser1, volatile uint16_t *laser2,
                   volatile float *grey_front, volatile float *grey_left, volatile float *grey_right, volatile float *grey_back)
 {
-    if(*target == 2 || *target == 0) //如果视觉识别到的目标是tag_type=2或tag_type=0，则根据偏航角进行转向修正
+    // 1. 如果正在进行推块冲刺阶段
+    if (s_is_pushing)
     {
-        // 调整姿态，使小车对准能量块（降低修正转向速度：由 50 降至 35）
-        if(*yaw > 7)
+        Motor_Control(0, 18); // 继续保持前冲推块
+        
+        // 检查是否到达边缘或超时（推块最多持续 2.0 秒，避免卡死推墙）
+        if (Motion_IsEdgeRisk(*laser1, *laser2, *grey_front) || (HAL_GetTick() - s_push_start_tick >= 2000U))
         {
-            // 往左转进行修正，非阻塞（交由大循环判断）
-            Motor_Control(35, 0);
-            osDelay(150); // 适当延时让转向生效
-            Motor_Control(0, 0); // 立即停止转向，保持当前位置
-            osDelay(150); // 适当延时让转向生效
-        }
-        else if( *yaw < -7)
-        {
-            // 往右转进行修正，非阻塞
-            Motor_Control(-35, 0); 
-            osDelay(150); // 适当延时让转向生效
-            Motor_Control(0, 0); // 立即停止转向，保持当前位置
-            osDelay(150); // 适当延时让转向生效
-        }
-        else if(*yaw >= -7 && *yaw <= 7) // 如果已经对准了
-        {  
-            // 已经对准，执行推块动作（降低速度：由 25 降至 18）
-            Motor_Control(0, 18); // 向前推
-            uint32_t push_start_time = HAL_GetTick(); // 记录推块开始时间
+            // 边缘触发或超时，执行冲刺收尾延时 (120ms) 确保块完全掉落
+            osDelay(PUSH_EXTEND_MS);
             
-            // 仅靠激光和前灰度判定边缘风险
-            while(!Motion_IsEdgeRisk(*laser1, *laser2, *grey_front))
-            {
-                osDelay(50);
-                
-                // 调试模式下：如果目标偏航角偏离了对齐范围，或者失去了目标，立即退出以重新对准
-                if (is_vision_debug_mode > 0)
-                {
-                    if (*target == 255 || *yaw > 7.0f || *yaw < -7.0f)
-                    {
-                        break;
-                    }
-                }
-                
-                // 添加一个10秒超时机制，防止死循环
-                if(HAL_GetTick() - push_start_time >= 10000) 
-                {
-                    break;
-                }
-            }
-            // 降低推完后的停止/后退速度（由 -25 降至 -18），并实时监测后灰度防跌落
+            // 刹车并后退撤离
             Motor_Control(0, -18); 
             for (int i = 0; i < 13; i++) {
-                if (Grey_Back > 250.0f) break;
+                if (*grey_back > 250.0f) break;
                 osDelay(10);
             }
             Motor_Control(0, 0); // 确保完全停止
-            osDelay(250); // 适当延时让动作生效
+            osDelay(250); // 动作生效延时
+            
+            // 复位推块状态
+            s_is_pushing = 0;
         }
+        return; // 在推块阶段，直接返回，不进行其他判断
     }
 
-    if(*target == 1) // 如果视觉识别到的目标是tag_type=1（自己的能量块需避让）
+    // 2. 正常识别与追踪阶段
+    if(*target == 2 || *target == 0) // 识别到敌方/中立能量块
     {
-        // 调整姿态，使小车对准能量块（降低转向速度：由 50 降至 35）
+        // 更新最近一次看到目标的时间和偏角
+        s_last_seen_tick = HAL_GetTick();
+        s_last_seen_yaw = *yaw;
+        
+        if(*yaw > 7)
+        {
+            // 偏左，转向对齐（转弯期间重置前冲状态）
+            Motor_Control(35, 0);
+            osDelay(150);
+            Motor_Control(0, 0);
+            osDelay(150);
+        }
+        else if( *yaw < -7)
+        {
+            // 偏右，转向对齐
+            Motor_Control(-35, 0); 
+            osDelay(150);
+            Motor_Control(0, 0);
+            osDelay(150);
+        }
+        else if(*yaw >= -7 && *yaw <= 7)
+        {  
+            // 已经对准，非阻塞向前直行逼近目标
+            Motor_Control(0, 18); 
+        }
+    }
+    else if(*target == 1) // 识别到自己能量块，避让
+    {
         if(*yaw >= 0 && *yaw <= 20)
         {
-            // 往左转进行修正，非阻塞（交由大循环判断）
             Motor_Control(-35, 0);
-            osDelay(150); // 适当延时让转向生效
-            Motor_Control(0, 0); // 立即停止转向，保持当前位置
-            osDelay(150); // 适当延时让转向生效
+            osDelay(150);
+            Motor_Control(0, 0);
+            osDelay(150);
         }
         else if(*yaw < 0 && *yaw >= -20)
         {
-            // 往右转进行修正，非阻塞
             Motor_Control(35, 0); 
-            osDelay(150); // 适当延时让转向生效
-            Motor_Control(0, 0); // 立即停止转向，保持当前位置
-            osDelay(150); // 适当延时让转向生效
+            osDelay(150);
+            Motor_Control(0, 0);
+            osDelay(150);
+        }
+    }
+    // 3. 目标丢失（可能没入车头盲区，或者是真正的丢失）
+    else if(*target == 255)
+    {
+        // 检查是否属于“刚才处于对准状态、且极短时间（400ms）内丢失”的贴身状态
+        if ((HAL_GetTick() - s_last_seen_tick < 400U) && (s_last_seen_yaw >= -7.0f && s_last_seen_yaw <= 7.0f))
+        {
+            // 触发贴身推块冲刺！
+            s_is_pushing = 1;
+            s_push_start_tick = HAL_GetTick();
+            Motor_Control(0, 18);
+            printf("[DetectLaser] Target close contact (lost while aligned). Start push phase!\r\n");
+        }
+        else
+        {
+            // 真正丢失，电机停转
+            Motor_Control(0, 0);
         }
     }
 }
