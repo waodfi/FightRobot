@@ -4,6 +4,10 @@
 #include "Motor.h"
 #include "IMU.h"
 #include <math.h>
+#include "config.h"
+
+extern float grey_value[4];
+
 
 
 //自动巡台函数，传入左右两个光电开关和前方灰度传感器的数值，根据不同的情况执行不同的转向逻辑
@@ -108,28 +112,17 @@ void Detect(volatile uint8_t *target, volatile float *yaw,volatile float *distan
 
 }
 
-static uint8_t Motion_GreyHighCount(float grey_front, float grey_left, float grey_right, float grey_back)
-{
-    uint8_t count = 0;
-    if (grey_front > 190.0f) count++;
-    if (grey_left  > 190.0f) count++;
-    if (grey_right > 190.0f) count++;
-    if (grey_back  > 190.0f) count++;
-    return count;
-}
-
-uint8_t Motion_IsEdgeRisk(uint16_t laser1, uint16_t laser2, float grey_front, float grey_left, float grey_right, float grey_back)
+uint8_t Motion_IsEdgeRisk(uint16_t laser1, uint16_t laser2, float grey_front)
 {
     uint8_t laser_edge = (laser1 > 260U || laser2 > 260U);
-    uint8_t grey_edge = (Motion_GreyHighCount(grey_front, grey_left, grey_right, grey_back) >= 3U);
+    uint8_t grey_edge = (grey_front > 250.0f);
     return (laser_edge || grey_edge);
 }
 
 void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front, float grey_left, float grey_right, float grey_back)
 {
-    uint8_t grey_high_count = Motion_GreyHighCount(grey_front, grey_left, grey_right, grey_back);
-    // 当激光传感器开始测得大于 250mm 时，说明小车已接近边缘，主动降速至 2；否则保持正常速度 18 巡台
-    if (laser1 > 250 || laser2 > 250 || grey_high_count >= 2U)
+    // 当激光传感器开始测得大于 250mm 时，或者前灰度接近边缘（> 240.0f），主动降速至 2；否则保持正常速度 18 巡台
+    if (laser1 > 250 || laser2 > 250 || grey_front > 240.0f)
     {
         Motor_Control(0, 2); 
     }
@@ -138,14 +131,16 @@ void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front
         Motor_Control(0, 18); 
     }
 
-    // 去掉所有灰度传感器判断条件，仅根据激光测距判断边缘
     if(laser1 > 260 && laser2 <= 260)         
     {
-        // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
+        // 强力反向制动 80ms 快速消能，随后后退 150ms（后退中若后灰度检测到边缘则停止）
         Motor_Control(0, -60);
         osDelay(80);
-        Motor_Control(0, -22);                  
-        osDelay(220);
+        Motor_Control(0, -18);                  
+        for (int i = 0; i < 15; i++) {
+            if (Grey_Back > 250.0f) break;
+            osDelay(10);
+        }
         // 降低转弯速度（-60 -> -35），转向时间由 650ms 缩短至 450ms
         Motor_Control(-35, 0);                  
         osDelay(450);
@@ -154,37 +149,32 @@ void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front
     }
     else if(laser1 <= 260 && laser2 > 260)
     {
-        // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
+        // 强力反向制动 80ms 快速消能，随后后退 150ms（后退中若后灰度检测到边缘则停止）
         Motor_Control(0, -60);
         osDelay(80);
-        Motor_Control(0, -22);
-        osDelay(220);
+        Motor_Control(0, -18);
+        for (int i = 0; i < 15; i++) {
+            if (Grey_Back > 250.0f) break;
+            osDelay(10);
+        }
         // 转向时间由 650ms 缩短至 450ms
         Motor_Control(35, 0);                   
         osDelay(450);
         Motor_Control(0, 0);
         osDelay(125);
     }
-    else if(laser1 > 260 && laser2 > 260)
+    else if((laser1 > 260 && laser2 > 260) || (grey_front > 250.0f))
     {
-        // 强力反向制动 80ms 快速消能，随后后退 220ms（后退总计 300ms）
+        // 双侧压线或正前方灰度压线：强力反向制动 80ms 快速消能，随后后退 150ms（后退中若后灰度检测到边缘则停止）
         Motor_Control(0, -60);
         osDelay(80);
-        Motor_Control(0, -22);
-        osDelay(220);
+        Motor_Control(0, -18);
+        for (int i = 0; i < 15; i++) {
+            if (Grey_Back > 250.0f) break;
+            osDelay(10);
+        }
         // 转向时间由 650ms 缩短至 450ms
         Motor_Control(-35, 0);                  
-        osDelay(450);
-        Motor_Control(0, 0);
-        osDelay(125);
-    }
-    else if(grey_high_count >= 3U)
-    {
-        Motor_Control(0, -60);
-        osDelay(80);
-        Motor_Control(0, -22);
-        osDelay(220);
-        Motor_Control(-35, 0);
         osDelay(450);
         Motor_Control(0, 0);
         osDelay(125);
@@ -222,8 +212,8 @@ void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float 
             Motor_Control(0, 18); // 向前推
             uint32_t push_start_time = HAL_GetTick(); // 记录推块开始时间
             
-            // 去掉灰度判断，只靠激光大于 260 触发
-            while(!Motion_IsEdgeRisk(*laser1, *laser2, *grey_front, *grey_left, *grey_right, *grey_back))
+            // 仅靠激光和前灰度判定边缘风险
+            while(!Motion_IsEdgeRisk(*laser1, *laser2, *grey_front))
             {
                 osDelay(50);
                 // 添加一个10秒超时机制，防止死循环
@@ -232,9 +222,12 @@ void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float 
                     break;
                 }
             }
-            // 降低推完后的停止/后退速度（由 -40 降至 -25）
-            Motor_Control(0, -25); // 推完后立即停止
-            osDelay(130); // 推完后稍微延时一下
+            // 降低推完后的停止/后退速度（由 -25 降至 -18），并实时监测后灰度防跌落
+            Motor_Control(0, -18); 
+            for (int i = 0; i < 13; i++) {
+                if (Grey_Back > 250.0f) break;
+                osDelay(10);
+            }
             Motor_Control(0, 0); // 确保完全停止
             osDelay(250); // 适当延时让动作生效
         }

@@ -1835,24 +1835,27 @@ void StartMotion_Task(void *argument)
           /* 融合前行速度（正常巡台速度 18）与转向速度 */
           Motor_Control((int16_t)turn_speed, 18);
           
-          /* 实时检测边缘：一旦有一侧激光检测到边缘值（> 260），立即制动、退后、转身，重回巡台 */
-          if (Motion_IsEdgeRisk(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back))
+          /* 实时检测边缘：一旦有一侧检测到边缘值，立即制动、退后、转身，重回巡台 */
+          if (Motion_IsEdgeRisk(laser_dist_1, laser_dist_2, Grey_Front))
           {
             printf("[FightAttack] Edge detected (Laser1: %d, Laser2: %d). Canceling attack, backing up and turning...\r\n", laser_dist_1, laser_dist_2);
             
-            /* 1. 强力反向制动 80ms 快速消能，随后后退 220ms */
+            /* 1. 强力反向制动 80ms 快速消能，随后后退 150ms（后退中若后灰度检测到边缘则停止） */
             Motor_Control(0, -60);
             osDelay(80);
-            Motor_Control(0, -22);
-            osDelay(220);
+            Motor_Control(0, -18);
+            for (int i = 0; i < 15; i++) {
+                if (Grey_Back > 250.0f) break;
+                osDelay(10);
+            }
             
             /* 2. 转向避让：降低转弯速度（-60 -> -35），转向时间 450ms */
             if (laser_dist_1 > 260 && laser_dist_2 <= 260) {
-              Motor_Control(-35, 0); // 左侧偏离，向右后退左转
+              Motor_Control(-35, 0); // 左侧偏离，向右转
             } else if (laser_dist_1 <= 260 && laser_dist_2 > 260) {
               Motor_Control(35, 0);  // 右侧偏离，向左转
             } else {
-              Motor_Control(-35, 0); // 双侧或异常，默认左转
+              Motor_Control(-35, 0); // 双侧或异常，默认右转
             }
             osDelay(450);
             
@@ -2193,8 +2196,8 @@ void StartMotion_Task(void *argument)
         {
           if (onstage_confirmed == 1 || is_test_mode == 1)
           {
-            // 新激光测距版边缘巡台与检测（当激光检测距离大于260时判定为边缘）
-            uint8_t edge_triggered = Motion_IsEdgeRisk(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);
+            // 新型传感器融合边缘检测（激光+前灰度）
+            uint8_t edge_triggered = Motion_IsEdgeRisk(laser_dist_1, laser_dist_2, Grey_Front);
             Auto_Control_Logic_Laser(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);     //自动巡台
             
             if (edge_triggered)
