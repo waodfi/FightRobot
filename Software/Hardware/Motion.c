@@ -8,6 +8,7 @@
 #include "config.h"
 
 extern float grey_value[4];
+extern volatile uint8_t is_vision_debug_mode;
 
 
 
@@ -365,6 +366,16 @@ void Detect_Laser(volatile uint8_t *target, volatile float *yaw, volatile float 
             while(!Motion_IsEdgeRisk(*laser1, *laser2, *grey_front))
             {
                 osDelay(50);
+                
+                // 调试模式下：如果目标偏航角偏离了对齐范围，或者失去了目标，立即退出以重新对准
+                if (is_vision_debug_mode > 0)
+                {
+                    if (*target == 255 || *yaw > 7.0f || *yaw < -7.0f)
+                    {
+                        break;
+                    }
+                }
+                
                 // 添加一个10秒超时机制，防止死循环
                 if(HAL_GetTick() - push_start_time >= 10000) 
                 {

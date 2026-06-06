@@ -63,6 +63,8 @@ extern uint32_t imu_rx_byte_count;
 
 volatile uint8_t global_vision_target = 0;   // 视觉传来的实时目标 tag_type
 volatile float global_vision_yaw = 0.0f;     // 视觉传来的实时偏航角 yaw
+volatile uint8_t is_vision_debug_mode = 0;    // 0=关, 1=安全只读模式, 2=动力调试模式
+volatile uint32_t last_vision_tick   = 0;    // 记录上一帧视觉数据的时间戳 (ms)
 
 extern uint16_t adc_raw_data[13];
 extern float grey_value[4];
@@ -483,7 +485,10 @@ HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
           }
 
           /* 3. PID 计算得出控制输出 [-100, 100] */
-          if (robot_state == ROBOT_INIT_CLIMB) {
+          if (is_vision_debug_mode == 1) {
+              output = 0.0f;
+              PID_Clear(&motor_pid[i]);
+          } else if (robot_state == ROBOT_INIT_CLIMB) {
               if (i == 0 || i == 2) {
                   output = CLIMB_LEFT_SPEED_LIMIT;
               } else {
@@ -499,9 +504,24 @@ HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_4);
           }
       }
 
-      /* 4. 更新电机 PWM 输出 (-100~100) 
-            下层 Motor_SetSpeed 会拆分符号控制反转引脚，和大小控制PWM */
       Motor_SetSpeed(MOTOR_1 + i, output); 
+    }
+
+    /* 视觉调试模式下的数据打印 (频率为 5Hz, 即每 200ms) */
+    if (is_vision_debug_mode > 0)
+    {
+      static uint32_t last_vision_debug_print = 0;
+      if (HAL_GetTick() - last_vision_debug_print >= 200U)
+      {
+        last_vision_debug_print = HAL_GetTick();
+        printf("[VisionDebug] Mode: %s | Target: %u | Yaw: %.1f | Expected Speeds: L=%.1f, R=%.1f\r\n",
+               (is_vision_debug_mode == 1) ? "SAFE" : "ACTIVE",
+               global_vision_target,
+               global_vision_yaw,
+               motor_target_speed[1],  // 左轮预期速度 (Index 1)
+               motor_target_speed[0]   // 右轮预期速度 (Index 0)
+        );
+      }
     }
 
         /* 降低打印频率至 1Hz，使串口更清爽 */
@@ -631,6 +651,7 @@ void StartVision_Task(void *argument)
       {
         global_vision_target = frame.data.vision.tag_type;
         global_vision_yaw = frame.data.vision.yaw_cdeg / 100.0f;
+        last_vision_tick = HAL_GetTick();
 
         printf("VISION seq=%u tag_id=%u tag_type=%u yaw=%.2f pitch=%.2f dist=%u tx=%d ty=%d tz=%d flags=%02X\r\n",
                frame.data.vision.seq,
@@ -721,6 +742,12 @@ void StartMotion_Task(void *argument)
   /* Infinite loop */
   for(;;)
   {
+    /* 视觉数据超时保护：如果处于调试模式下且超过500ms无视觉更新，重置目标为255 */
+    if (is_vision_debug_mode > 0 && (HAL_GetTick() - last_vision_tick > 500U))
+    {
+      global_vision_target = 255;
+    }
+
     /* 串口全程打印小车“在台上”或“在台下”，便于调试 */
     static uint32_t last_status_print_tick = 0;
     if (HAL_GetTick() - last_status_print_tick >= 500)
@@ -2196,21 +2223,46 @@ void StartMotion_Task(void *argument)
         {
           if (onstage_confirmed == 1 || is_test_mode == 1)
           {
-            // 新型传感器融合边缘检测（激光+前灰度）
-            uint8_t edge_triggered = Motion_IsEdgeRisk(laser_dist_1, laser_dist_2, Grey_Front);
-            Auto_Control_Logic_Laser(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);     //自动巡台
-            
-            if (edge_triggered)
+            if (is_vision_debug_mode > 0)
             {
-                // 避障动作完成后，强制清零全局避障传感器缓存，防止采样率延迟导致二次误触发后退
-                laser_dist_1 = 0;
-                laser_dist_2 = 0;
-                osDelay(100); // 给传感器任务 100ms 采样刷新时间以更新真实值
+              // 纯视觉调试模式下，为了在台架或桌面上调试时不被悬空的激光或高位灰度误判定为边缘风险导致卡死，
+              // 我们传入虚拟的安全传感器数据（100mm 距离，100.0f 灰度），屏蔽调试期间的边缘触发。
+              uint16_t dummy_laser1 = 100;
+              uint16_t dummy_laser2 = 100;
+              float dummy_grey_front = 100.0f;
+              float dummy_grey_left = 100.0f;
+              float dummy_grey_right = 100.0f;
+              float dummy_grey_back = 100.0f;
+              
+              if (global_vision_target == 0 || global_vision_target == 1 || global_vision_target == 2)
+              {
+                Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &dummy_laser1, &dummy_laser2,
+                             &dummy_grey_front, &dummy_grey_left, &dummy_grey_right, &dummy_grey_back);
+              }
+              else
+              {
+                Motor_Control(0, 0);
+              }
             }
             else
             {
-                Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2,
-                             &Grey_Front, &Grey_Left, &Grey_Right, &Grey_Back);  //自动检测能量块并推下
+              // 正常自动控制逻辑
+              // 新型传感器融合边缘检测（激光+前灰度）
+              uint8_t edge_triggered = Motion_IsEdgeRisk(laser_dist_1, laser_dist_2, Grey_Front);
+              Auto_Control_Logic_Laser(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);     //自动巡台
+              
+              if (edge_triggered)
+              {
+                  // 避障动作完成后，强制清零全局避障传感器缓存，防止采样率延迟导致二次误触发后退
+                  laser_dist_1 = 0;
+                  laser_dist_2 = 0;
+                  osDelay(100); // 给传感器任务 100ms 采样刷新时间以更新真实值
+              }
+              else
+              {
+                  Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2,
+                               &Grey_Front, &Grey_Left, &Grey_Right, &Grey_Back);  //自动检测能量块并推下
+              }
             }
           }
           else
@@ -2219,6 +2271,7 @@ void StartMotion_Task(void *argument)
           }
         }
         
+
 
         last_buttons = ctrl.buttons;
     }
@@ -2299,6 +2352,7 @@ static void Debug_EnterOnstageRun(const char *source)
   control_mode = 1;
   onstage_confirmed = 1;
   verification_start_tick = 0;
+  is_vision_debug_mode = 0; // Clear debug flag
   robot_state = ROBOT_RUNNING;
   Motor_Control(0, 0);
   printf("[SerialTrigger] %s received! Force ON-STAGE debug: ROBOT_RUNNING, auto mode, fall detection bypassed.\r\n",
@@ -2322,6 +2376,7 @@ void Trigger_Debug_ClimbScan(void)
   onstage_confirmed = 0;
   verification_start_tick = 0;
   climb_pd_init = 0;
+  is_vision_debug_mode = 0; // Clear debug flag
   climb_start_tick = HAL_GetTick();
   robot_state = ROBOT_TEST_ROTATE_PREPARE;
   Motor_Control(0, 0);
@@ -2334,9 +2389,50 @@ void Trigger_Debug_Stop(void)
   control_mode = 0;
   onstage_confirmed = 0;
   verification_start_tick = 0;
+  is_vision_debug_mode = 0; // Clear debug flag
   robot_state = ROBOT_FINISHED;
   Motor_Control(0, 0);
   printf("[SerialTrigger] @STOP received! Motors stopped. State -> ROBOT_FINISHED.\r\n");
+}
+
+void Trigger_Debug_VisionOnly(void)
+{
+  if (is_vision_debug_mode == 1)
+  {
+    // Toggle off: if already in SAFE debug mode, exit to STOP state
+    Trigger_Debug_Stop();
+  }
+  else
+  {
+    is_vision_debug_mode = 1;
+    is_test_mode = 1;
+    control_mode = 1;
+    onstage_confirmed = 1;
+    verification_start_tick = 0;
+    robot_state = ROBOT_RUNNING;
+    Motor_Control(0, 0);
+    printf("[SerialTrigger] @VISION received! Enter Vision-Only SAFE Debug Mode. Standby...\r\n");
+  }
+}
+
+void Trigger_Debug_VisionActive(void)
+{
+  if (is_vision_debug_mode == 2)
+  {
+    // Toggle off: if already in ACTIVE debug mode, exit to STOP state
+    Trigger_Debug_Stop();
+  }
+  else
+  {
+    is_vision_debug_mode = 2;
+    is_test_mode = 1;
+    control_mode = 1;
+    onstage_confirmed = 1;
+    verification_start_tick = 0;
+    robot_state = ROBOT_RUNNING;
+    Motor_Control(0, 0);
+    printf("[SerialTrigger] @VISION_ACTIVE received! Enter Vision-Only ACTIVE Debug Mode. Standby...\r\n");
+  }
 }
 /* USER CODE END Application */
 

@@ -69,6 +69,8 @@ extern void Trigger_Debug_Launch(void);
 extern void Trigger_Debug_RunOnstage(void);
 extern void Trigger_Debug_ClimbScan(void);
 extern void Trigger_Debug_Stop(void);
+extern void Trigger_Debug_VisionOnly(void);
+extern void Trigger_Debug_VisionActive(void);
 
 #define CMD_ACC_SIZE 256
 static char s_cmd_acc_buf[CMD_ACC_SIZE];
@@ -98,6 +100,13 @@ void Control_UART_RxCallback(UART_HandleTypeDef *huart, uint16_t Size) {
             cmd_matched = 1;
         } else if (strstr(s_cmd_acc_buf, "@CLIMB") != NULL || strstr(s_cmd_acc_buf, "@climb") != NULL) {
             Trigger_Debug_ClimbScan();
+            cmd_matched = 1;
+        } else if (strstr(s_cmd_acc_buf, "@VISION_ACTIVE") != NULL || strstr(s_cmd_acc_buf, "@vision_active") != NULL ||
+                   strstr(s_cmd_acc_buf, "@VISIONA") != NULL || strstr(s_cmd_acc_buf, "@visiona") != NULL) {
+            Trigger_Debug_VisionActive();
+            cmd_matched = 1;
+        } else if (strstr(s_cmd_acc_buf, "@VISION") != NULL || strstr(s_cmd_acc_buf, "@vision") != NULL) {
+            Trigger_Debug_VisionOnly();
             cmd_matched = 1;
         } else if (strstr(s_cmd_acc_buf, "@STOP") != NULL || strstr(s_cmd_acc_buf, "@stop") != NULL) {
             Trigger_Debug_Stop();
