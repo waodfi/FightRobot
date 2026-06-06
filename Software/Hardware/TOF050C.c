@@ -213,7 +213,7 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
     if (bus == SOFT_I2C_BUS_1) {
         if (!dev1_initialized) {
             if (current_tick - last_init_tick1 < INIT_RETRY_DELAY_MS) {
-                return 0xFFFF;
+                return 150; // 处于自愈冷却期时返回安全内部距离，防止连续误触发倒车掉台
             }
             last_init_tick1 = current_tick;
             if (vl53l0x_init(&vl53l0x_dev1) == VL53L0X_OK) {
@@ -250,7 +250,7 @@ uint16_t TOF050C_ReadDistance(SoftI2C_Bus_e bus)
     } else {
         if (!dev2_initialized) {
             if (current_tick - last_init_tick2 < INIT_RETRY_DELAY_MS) {
-                return 0xFFFF;
+                return 150; // 处于自愈冷却期时返回安全内部距离，防止连续误触发倒车掉台
             }
             last_init_tick2 = current_tick;
             if (vl53l0x_init(&vl53l0x_dev2) == VL53L0X_OK) {

@@ -2194,8 +2194,20 @@ void StartMotion_Task(void *argument)
           if (onstage_confirmed == 1 || is_test_mode == 1)
           {
             // 新激光测距版边缘巡台与检测（当激光检测距离大于260时判定为边缘）
+            uint8_t edge_triggered = (laser_dist_1 > 260 || laser_dist_2 > 260);
             Auto_Control_Logic_Laser(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);     //自动巡台
-            Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2, &Grey_Front);  //自动检测能量块并推下
+            
+            if (edge_triggered)
+            {
+                // 避障动作完成后，强制清零全局避障传感器缓存，防止采样率延迟导致二次误触发后退
+                laser_dist_1 = 0;
+                laser_dist_2 = 0;
+                osDelay(100); // 给传感器任务 100ms 采样刷新时间以更新真实值
+            }
+            else
+            {
+                Detect_Laser(&global_vision_target, &global_vision_yaw, &IR_Distance_F, &laser_dist_1, &laser_dist_2, &Grey_Front);  //自动检测能量块并推下
+            }
           }
           else
           {
