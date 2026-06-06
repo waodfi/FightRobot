@@ -3,6 +3,7 @@
 #include "cmsis_os.h"
 #include "Motor.h"
 #include "IMU.h"
+#include "config.h"
 #include <math.h>
 #include "config.h"
 
@@ -112,11 +113,135 @@ void Detect(volatile uint8_t *target, volatile float *yaw,volatile float *distan
 
 }
 
+#define EDGE_GREY_HIGH_THRESHOLD 190.0f
+#define EDGE_GREY_STRONG_THRESHOLD 230.0f
+#define EDGE_LASER_SLOW_MM       250U
+#define EDGE_LASER_TRIGGER_MM    260U
+
 uint8_t Motion_IsEdgeRisk(uint16_t laser1, uint16_t laser2, float grey_front)
 {
     uint8_t laser_edge = (laser1 > 260U || laser2 > 260U);
     uint8_t grey_edge = (grey_front > 250.0f);
     return (laser_edge || grey_edge);
+}
+
+EdgeDir_e Motion_GetEdgeDir(uint16_t laser1, uint16_t laser2, float grey_front, float grey_left, float grey_right, float grey_back)
+{
+    uint8_t front_high = (grey_front > EDGE_GREY_HIGH_THRESHOLD);
+    uint8_t left_high  = (grey_left  > EDGE_GREY_HIGH_THRESHOLD);
+    uint8_t right_high = (grey_right > EDGE_GREY_HIGH_THRESHOLD);
+    uint8_t back_high  = (grey_back  > EDGE_GREY_HIGH_THRESHOLD);
+    uint8_t front_strong = (grey_front > EDGE_GREY_STRONG_THRESHOLD);
+    uint8_t left_strong  = (grey_left  > EDGE_GREY_STRONG_THRESHOLD);
+    uint8_t right_strong = (grey_right > EDGE_GREY_STRONG_THRESHOLD);
+    uint8_t back_strong  = (grey_back  > EDGE_GREY_STRONG_THRESHOLD);
+    uint8_t grey_strong = (front_strong || left_strong || right_strong || back_strong);
+    uint8_t high_count = Motion_GreyHighCount(grey_front, grey_left, grey_right, grey_back);
+    uint8_t laser_edge = (laser1 > EDGE_LASER_TRIGGER_MM || laser2 > EDGE_LASER_TRIGGER_MM);
+
+    if (!laser_edge && high_count < 3U && !grey_strong)
+    {
+        return EDGE_DIR_NONE;
+    }
+
+    if (high_count >= 3U)
+    {
+        return EDGE_DIR_UNKNOWN;
+    }
+
+    if (laser_edge || front_strong || front_high)
+    {
+        return EDGE_DIR_FRONT;
+    }
+
+    if (back_strong || back_high)
+    {
+        return EDGE_DIR_BACK;
+    }
+
+    if ((left_strong || left_high) && !right_high)
+    {
+        return EDGE_DIR_LEFT;
+    }
+
+    if ((right_strong || right_high) && !left_high)
+    {
+        return EDGE_DIR_RIGHT;
+    }
+
+    return EDGE_DIR_UNKNOWN;
+}
+
+void Motion_EscapeEdge(uint16_t laser1, uint16_t laser2, float grey_front, float grey_left, float grey_right, float grey_back)
+{
+    EdgeDir_e edge_dir = Motion_GetEdgeDir(laser1, laser2, grey_front, grey_left, grey_right, grey_back);
+    int16_t turn_speed = -35;
+
+    if (edge_dir == EDGE_DIR_NONE)
+    {
+        return;
+    }
+
+    Motor_Control(0, 0);
+    osDelay(40);
+
+    switch (edge_dir)
+    {
+        case EDGE_DIR_FRONT:
+            Motor_Control(0, -60);
+            osDelay(80);
+            Motion_BackAwayWithRearGuard(-18, 150U);
+
+            if (laser1 > EDGE_LASER_TRIGGER_MM && laser2 <= EDGE_LASER_TRIGGER_MM)
+            {
+                turn_speed = -35;
+            }
+            else if (laser1 <= EDGE_LASER_TRIGGER_MM && laser2 > EDGE_LASER_TRIGGER_MM)
+            {
+                turn_speed = 35;
+            }
+            else
+            {
+                turn_speed = -35;
+            }
+            Motor_Control(turn_speed, 0);
+            osDelay(450);
+            break;
+
+        case EDGE_DIR_BACK:
+            Motor_Control(0, 28);
+            osDelay(260);
+            Motor_Control(-35, 0);
+            osDelay(350);
+            break;
+
+        case EDGE_DIR_LEFT:
+            Motor_Control(-35, 0);
+            osDelay(450);
+            Motor_Control(0, 16);
+            osDelay(180);
+            break;
+
+        case EDGE_DIR_RIGHT:
+            Motor_Control(35, 0);
+            osDelay(450);
+            Motor_Control(0, 16);
+            osDelay(180);
+            break;
+
+        case EDGE_DIR_UNKNOWN:
+        default:
+            Motor_Control(0, 0);
+            osDelay(80);
+            Motor_Control(-35, 0);
+            osDelay(550);
+            Motor_Control(0, 14);
+            osDelay(180);
+            break;
+    }
+
+    Motor_Control(0, 0);
+    osDelay(125);
 }
 
 void Auto_Control_Logic_Laser(uint16_t laser1, uint16_t laser2, float grey_front, float grey_left, float grey_right, float grey_back)

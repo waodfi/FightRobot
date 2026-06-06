@@ -1838,7 +1838,11 @@ void StartMotion_Task(void *argument)
           /* 实时检测边缘：一旦有一侧检测到边缘值，立即制动、退后、转身，重回巡台 */
           if (Motion_IsEdgeRisk(laser_dist_1, laser_dist_2, Grey_Front))
           {
-            printf("[FightAttack] Edge detected (Laser1: %d, Laser2: %d). Canceling attack, backing up and turning...\r\n", laser_dist_1, laser_dist_2);
+            printf("[FightAttack] Edge detected (Laser1: %d, Laser2: %d). Canceling attack, directional escape...\r\n", laser_dist_1, laser_dist_2);
+            Motion_EscapeEdge(laser_dist_1, laser_dist_2, Grey_Front, Grey_Left, Grey_Right, Grey_Back);
+            robot_state = ROBOT_RUNNING;
+            printf("[FightAttack] Edge escape complete. Resuming patrol...\r\n");
+            break;
             
             /* 1. 强力反向制动 80ms 快速消能，随后后退 150ms（后退中若后灰度检测到边缘则停止） */
             Motor_Control(0, -60);
@@ -1860,12 +1864,8 @@ void StartMotion_Task(void *argument)
             osDelay(450);
             
             /* 3. 停止转向 */
-            Motor_Control(0, 0);
-            osDelay(125);
             
             /* 4. 重置状态为 ROBOT_RUNNING，恢复常规巡台 */
-            robot_state = ROBOT_RUNNING;
-            printf("[FightAttack] Edge escape complete. Resuming patrol...\r\n");
           }
           break;
         }

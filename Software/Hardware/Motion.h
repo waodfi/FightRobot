@@ -3,6 +3,16 @@
 
 #include "main.h"
 
+typedef enum
+{
+    EDGE_DIR_NONE = 0,
+    EDGE_DIR_FRONT,
+    EDGE_DIR_BACK,
+    EDGE_DIR_LEFT,
+    EDGE_DIR_RIGHT,
+    EDGE_DIR_UNKNOWN
+} EdgeDir_e;
+
 void Auto_Control_Logic(uint8_t sw1, uint8_t sw3, float grey_front,float grey_left,float grey_right,float grey_back);
 void Detect(volatile uint8_t *target, volatile float *yaw, volatile float *distance_front, volatile uint8_t *SW_L, volatile uint8_t *SW_R, volatile float *grey_front);
 
