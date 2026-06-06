@@ -709,6 +709,21 @@
               <FileType>1</FileType>
               <FilePath>..\Software\PID\PID.c</FilePath>
             </File>
+            <File>
+              <FileName>SoftI2C.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Software\Hardware\SoftI2C.c</FilePath>
+            </File>
+            <File>
+              <FileName>TOF050C.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Software\Hardware\TOF050C.c</FilePath>
+            </File>
+            <File>
+              <FileName>vl53l0x.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Software\Hardware\vl53l0x.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
